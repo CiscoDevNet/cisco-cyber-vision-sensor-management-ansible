@@ -1,0 +1,12 @@
+---
+- name: Activate app
+  connection: local
+  ansible.builtin.uri:
+    validate_certs: false
+    url: https://{{ iox_base_url }}/iox/api/v2/hosting/apps/{{ app_name }}/state?action=activate
+    method: POST
+    body_format: json
+    headers:
+      X-Token-Id: "{{ auth_token }}"
+    body: "{{ lookup('template', activation_payload_template) }}"
+    timeout: 240

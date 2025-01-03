@@ -1,0 +1,30 @@
+---
+all:
+  children:
+{% set processed_products = [] %}
+{% for row in csv_data.list %}
+{% if processed_products != [] %}
+{% if row.product not in processed_products %}
+      var_files:
+        - secrets.yml
+      vars:
+        ansible_connection: ansible.netcommon.network_cli
+        ansible_network_os: cisco.ios.ios
+
+{% endif %}
+{% endif %}
+{% if row.product not in processed_products %}
+    {{ row.product }}:
+      hosts:
+{% endif %}
+        {{ row.hostname }}:
+          collection_address: {{ row.collection_address }}
+          collection_gateway: {{ row.collection_gateway }}
+          collection_prefix: {{ row.collection_prefix }}
+          iox_port: {{ row.iox_port }}
+          name: {{ row.name }}
+          capture_mode: {{ row.capture_mode }}
+          active_discovery: {{ row.active_discovery }}
+{% set _ = processed_products.append(row.product) %}
+{% endfor %}
+

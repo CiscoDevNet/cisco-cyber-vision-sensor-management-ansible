@@ -1,0 +1,11 @@
+*.log
+.vscode/
+oldfiles/
+local_utils/
+**/vars.yml
+**/secrets.yml
+**/inventory.yml
+.env*
+.direnv/*
+cv_tar_files/*
+!cv_tar_files/.gitkeep

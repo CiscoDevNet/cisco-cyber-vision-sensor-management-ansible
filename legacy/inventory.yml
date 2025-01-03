@@ -1,0 +1,82 @@
+---
+all:
+  children:
+    catalyst9k:
+      hosts:
+        192.168.1.101:
+          collection_address: 192.168.1.1
+          collection_prefix: 24
+          iox_login: <username>
+          iox_password: <password>
+          iox_port: 443
+          name: "cat9300_2"
+          
+        192.168.1.102:
+          collection_address: 192.168.1.2
+          collection_prefix: 24
+          iox_login: <username>
+          iox_password: <password>
+          iox_port: 443
+          name: "cat9300_3"
+
+    ic3k:
+      hosts:
+        192.168.1.103:
+          mgmt_netmask: 255.255.255.0
+          mgmt_gateway: 192.168.1.1
+          collection_address: 192.168.1.3
+          collection_prefix: 24
+          iox_login: <username>
+          iox_password: <password>
+          iox_port: 8443
+          name: "ic3k_1"
+          
+        192.168.1.104:
+          mgmt_netmask: 255.255.255.0
+          mgmt_gateway: 192.168.1.1
+          collection_address: 192.168.1.4
+          collection_prefix: 24
+          iox_login: <username>
+          iox_password: <password>
+          iox_port: 8443
+          name: "ic3k_2"
+
+    ir1101:
+      hosts:
+        192.168.1.105:
+          collection_address: 169.254.0.2
+          collection_prefix: 30
+          iox_login: <username>
+          iox_password: <password>
+          iox_port: 443
+          name: "sparrow_2"
+
+    ie3X00:
+      hosts:
+        192.168.1.106:
+          collection_address: 192.168.1.6
+          collection_prefix: 24
+          iox_login: <username>
+          iox_password: <password>
+          iox_port: 443
+          active_discovery: true
+          name: "petra_2"
+
+    ir8340:
+      hosts:
+        192.168.1.107:
+          iox_login: <username>
+          iox_password: <password>
+          iox_port: 443
+          active_discovery: false
+          name: "sumatra"
+          
+    ie9300:
+      hosts:
+        192.168.1.108:
+          collection_address: 192.168.69.8
+          collection_prefix: 24
+          iox_login: <username>
+          iox_password: <password>
+          iox_port: 443
+          name: "clarke_2"

@@ -1,0 +1,35 @@
+---
+- name: Activate app
+  block:
+    - name: Activate app (non IR1XXX)
+      connection: local
+      cisco.ios.ios_command:
+        commands: "app-hosting activate appid {{ app_name }}"
+      register: activate
+      until: "'Current state is: ACTIVATED' in activate.stdout_lines[0]"
+      retries: 5
+      delay: 5
+      vars:
+        ansible_command_timeout: 200
+      #when: '"IR1XXX" not in group_names'
+
+    # - name: Activate app (IR1XXX)
+    #   connection: local
+    #   cisco.ios.ios_command:
+    #     commands: "app-hosting activate appid {{ app_name }}"
+    #   register: activate
+    #   until: "'Current state is: ACTIVATED' in activate.stdout_lines"
+    #   retries: 5
+    #   delay: 5
+    #   vars:
+    #     ansible_command_timeout: 200
+    #   when: '"IR1XXX" in group_names'
+
+- name: Verify the application is Activated 
+  cisco.ios.ios_command:
+    commands: show app-hosting list
+  register: activation_status
+  check_mode: no
+  until: "'ACTIVATED' in activation_status.stdout_lines[0][2]"
+  retries: 5
+  delay: 5

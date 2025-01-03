@@ -1,0 +1,24 @@
+---
+- name: Unsupported update on IC3K
+  ansible.builtin.assert:
+    that:
+      - "'IC3000' not in group_names"
+    fail_msg: "Update is not supported for IC3K. Please use combined update or sbs-update for this sensor."
+
+- name: Upgrade app
+  connection: local
+  cisco.ios.ios_command:
+    commands: "app-hosting upgrade appid {{ app_name }} package {{ storage }}{{ application_file[0] }}"
+  register: Upgrade
+
+- name: Verify the application is finished upgrading
+  cisco.ios.ios_command:
+    commands: show app-hosting list
+  register: upgrade_status
+  until: not 'UPGRADING' in upgrade_status.stdout_lines[0][2]
+  retries: 10
+  delay: 5
+
+- name: Pause for 25 seconds to upgrade the app
+  ansible.builtin.pause:
+    seconds: 25

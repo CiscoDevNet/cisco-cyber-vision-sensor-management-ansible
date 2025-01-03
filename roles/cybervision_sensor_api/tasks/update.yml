@@ -1,0 +1,52 @@
+---
+- name: Stop app
+  connection: local
+  ansible.builtin.uri:
+    validate_certs: false
+    url: https://{{ iox_base_url }}/iox/api/v2/hosting/apps/{{ app_name }}/state?action=stop
+    method: POST
+    headers:
+      X-Token-Id: "{{ auth_token }}"
+    timeout: 240
+  when: "app_status == 'RUNNING'"
+
+- name: Get the app status
+  connection: local
+  ansible.builtin.uri:
+    validate_certs: false
+    url: https://{{ iox_base_url }}/iox/api/v2/hosting/apps/{{ app_name }}
+    method: GET
+    headers:
+      X-Token-Id: "{{ auth_token }}"
+  register: app_details
+
+- name: Get app status
+  ansible.builtin.set_fact: app_status="{{ app_details.json.app_checksums.app_state }}"
+  connection: local
+  when: mode == 'update'
+
+- name: Deactivate app
+  connection: local
+  ansible.builtin.uri:
+    validate_certs: false
+    url: https://{{ iox_base_url }}/iox/api/v2/hosting/apps/{{ app_name }}/state?action=deactivate
+    method: POST
+    headers:
+      X-Token-Id: "{{ auth_token }}"
+    timeout: 240
+  when:
+    - "'IC3000' in group_names"
+    - app_status == 'STOPPED'
+
+- name: Upgrade app
+  connection: local
+  ansible.builtin.uri:
+    validate_certs: false
+    url: https://{{ iox_base_url }}/iox/api/v2/hosting/apps/{{ app_name }}
+    method: PUT
+    headers:
+      X-Token-Id: "{{ auth_token }}"
+      X-PreserveData: "on"
+      Content-Type: application/octet-stream
+    src: "{{ application_tar_path }}"
+    timeout: 960

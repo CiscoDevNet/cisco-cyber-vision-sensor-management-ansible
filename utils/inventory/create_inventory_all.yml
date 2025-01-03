@@ -1,0 +1,24 @@
+---
+- name: Create Ansible inventory from Cisco CSV file
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    csv_file_path: "hosts_all.csv"  # Replace with your CSV file path
+    ansible_inventory_path: "ansible_inventory_1.yml"  # Replace with desired output inventory file path
+
+  tasks:
+    - name: Read data from CSV file
+      read_csv:
+        path: "{{ csv_file_path }}"
+        delimiter: ','
+      register: csv_data
+
+    - name: Generate Ansible inventory file
+      template:
+        src: inventory_template_1.ini_all.j2  # Template file for inventory
+        dest: "{{ ansible_inventory_path }}"
+      vars:
+        hosts_data: "{{ csv_data.list }}"
+

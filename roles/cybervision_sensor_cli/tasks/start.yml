@@ -1,0 +1,20 @@
+---
+- name: Start app
+  connection: local
+  cisco.ios.ios_command:
+    commands: "app-hosting start appid {{ app_name }}"
+  register: start
+  until: "'Current state is: RUNNING' in start.stdout_lines[0]"
+  retries: 5
+  delay: 5
+  vars:
+    ansible_command_timeout: 120
+
+- name: Verify the application is Running 
+  cisco.ios.ios_command:
+    commands: show app-hosting list
+  register: running_status
+  check_mode: no
+  until: "'RUNNING' in running_status.stdout_lines[0][2]"
+  retries: 5
+  delay: 5

@@ -1,0 +1,14 @@
+---
+- name: Install app
+  connection: local
+  cisco.ios.ios_command:
+    commands: "app-hosting install appid {{ app_name }} package {{ storage }}{{ application_file[0] }}"
+  register: install
+
+- name: Verify the application is finished installing
+  cisco.ios.ios_command:
+    commands: show app-hosting list
+  register: installation_status
+  until: "'DEPLOYED' in installation_status.stdout_lines[0][2]"
+  retries: 35
+  delay: 10

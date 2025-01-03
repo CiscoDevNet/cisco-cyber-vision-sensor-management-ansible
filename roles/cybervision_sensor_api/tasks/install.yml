@@ -1,0 +1,14 @@
+---
+- name: Install app
+  connection: local
+  ansible.builtin.uri:
+    validate_certs: false
+    url: https://{{ inventory_hostname }}:{{ iox_port }}/iox/api/v2/hosting/apps
+    method: POST
+    headers:
+      X-Token-Id: "{{ auth_token }}"
+      X-Connector-Id: "{{ app_name }}"
+      Content-Type: application/octet-stream
+    src: "{{ application_tar_path }}"
+    status_code: 201
+    timeout: 960
