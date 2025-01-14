@@ -1,0 +1,21 @@
+# Set default behavior to automatically normalize line endings.
+* text=auto eol=lf
+
+# Explicitly declare text files we want to always be normalized and converted to LF
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+
+# Declare binary files to ensure they are not modified
+*.jpg binary
+*.png binary
+*.gif binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
+*.bz2 binary
+*.exe binary
+*.dll binary

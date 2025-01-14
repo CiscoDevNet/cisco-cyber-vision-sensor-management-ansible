@@ -1,0 +1,260 @@
+---
+- name: Create or verify temporary directory for app extraction
+  block:
+    - name: Ensure a temporary directory for app extraction
+      connection: local
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: app_extract
+      register: app_extract_temp_dir
+      notify: "Remove app temporary directory"
+
+    - name: Extract application
+      connection: local
+      ansible.builtin.unarchive:
+        src: "{{ application_tar_path }}"
+        dest: "{{ app_extract_temp_dir.path }}"
+
+    - name: Load package.yaml
+      ansible.builtin.include_vars:
+        file: "{{ app_extract_temp_dir.path }}/package.yaml"
+        name: package
+
+    - name: Check app type (IC3K)
+      ansible.builtin.assert:
+        that:
+          - package.app.cpuarch == "x86_64"
+          - package.app.type == "vm"
+      when: "'ic3k' in group_names"
+
+    - name: Check app type (CAT9K)
+      ansible.builtin.assert:
+        that:
+          - package.app.cpuarch == "x86_64"
+          - package.app.type == "docker"
+      when: >
+        'C9XXX' in group_names or
+        'IR8340' in group_names
+
+    - name: Check app type (IR1XXX, IE3X00 and IE9300)
+      ansible.builtin.assert:
+        that:
+          - package.app.cpuarch == "aarch64"
+          - package.app.type == "docker"
+      when: >
+        'IR1XXX' in group_names or
+        'IE3X00' in group_names or
+        'IE9300' in group_names
+
+- name: Verify Cyber Vision Center version
+  block:
+    - name: Get center version
+      connection: local
+      ansible.builtin.uri:
+        validate_certs: false
+        url: "{{ center_url | mandatory }}/api/3.0/version"
+        method: GET
+        headers:
+          x-token-id: "{{ center_token | mandatory }}"
+        body_format: json
+      register: center_version_result
+
+    - name: Register center version
+      ansible.builtin.set_fact: center_version_json="{{ center_version_result.json }}"
+      connection: local
+
+    - name: Register center version
+      ansible.builtin.set_fact: center_version="{{ center_version_json.major }}.{{ center_version_json.minor }}.{{ center_version_json.incr }}"
+      connection: local
+
+    - name: Check center version
+      ansible.builtin.assert:
+        that:
+          - center_version is version('3.2.1', '>=')
+        fail_msg: Current Cyber Vision Center (CVC) version {{ center_version }} is lower than minimum requirement, please update CVC"
+        success_msg: "Current Cyber Vision Center version {{ center_version }} meets minimum version requirements"
+
+- name: Verify Cyber Vision Sensor version
+  block:
+    - name: Register sensor version
+      ansible.builtin.set_fact: sensor_version="{{ package.info.version.split('+')[0] }}"
+      connection: local
+
+    - name: Check sensor version
+      ansible.builtin.assert:
+        that:
+          - sensor_version is version(center_version, '=')
+      when:
+        - check_sensor_and_center_version
+
+- name: Extract host serial number
+  block:
+    - name: Show inventory
+      cisco.ios.ios_command:
+        commands: 'show inventory'
+      register: inventory
+
+    - name: Extract the serial number of the device
+      ansible.builtin.set_fact:
+        serial_number: "{{ inventory.stdout | regex_findall('SN:\\s+(\\w+)') | default('Not found') }}"
+
+    - name: Register serial number of the device
+      ansible.builtin.set_fact: serial="{{ serial_number[0] }}"
+      connection: local
+
+- name: Get app status
+  ansible.builtin.set_fact: app_status="{{ app_list[1][1] }}"
+  connection: local
+  when: mode == 'update'
+
+- name: Set sensor ID
+  block:
+    - name: Check if sensor exists
+      connection: local
+      ansible.builtin.uri:
+        validate_certs: false
+        url: "{{ center_url | mandatory }}/api/3.0/sensors"
+        method: GET
+        headers:
+          x-token-id: "{{ center_token | mandatory }}"
+        body_format: json
+      register: sensor_list
+
+    - name: Get sensor id
+      ansible.builtin.set_fact: sensor_id="{{ sensor_list.json | json_query(jmesquery) }}"
+      connection: local
+      vars:
+        jmesquery: "[? serialNumber==`{{ serial }}`].id"
+
+    - name: Default value for sensor id
+      ansible.builtin.set_fact: sensor_id="{{ sensor_id[0] if sensor_id != [] else '' }}"
+      connection: local
+
+- name: Copy installation file to the host
+  block:
+    - name: Get the application tar file name
+      ansible.builtin.set_fact:
+        application_file: "{{ application_tar_path | regex_findall('.*/(.*.tar)$') | default('Not found') }}"
+
+    - name: Select storage
+      ansible.builtin.set_fact:
+        storage: "{{ 'flash:' if 'IE3X00' in group_names else 'bootflash:' if 'C9XXX' or 'IE9300' or 'IR1XXX' or 'IR8340' in group_names }}"
+      connection: local
+
+    - name: Copy the application tar file to the device
+      cisco.ios.ios_command:
+        commands:
+          - command: "copy scp://{{ cv_scp_username }}:{{ cv_scp_password }}@{{ ansible_controller_ip }}/{{ application_tar_path }} {{ storage }}"
+            prompt: 'Destination filename \[{{ application_file[0] }}\]?'
+            answer: "\r"
+      vars:
+        ansible_command_timeout: 120
+
+- name: Install the app
+  ansible.builtin.import_tasks: install.yml
+  when: mode == 'install'
+
+- name: Update the app
+  ansible.builtin.import_tasks: update.yml
+  when: mode == 'update'
+
+- name: Activate the app
+  ansible.builtin.import_tasks: activate.yml
+  when: mode == 'install'
+
+- name: Start the app
+  ansible.builtin.import_tasks: start.yml
+  when: mode == 'install'
+
+- name: Show app-hosting list
+  cisco.ios.ios_command:
+    commands: 'show app-hosting list'
+  register: app_hosting_list
+
+- name: Print App hosting list
+  ansible.builtin.debug:
+    msg: "{{ app_hosting_list.stdout_lines }}"
+
+- name: Get the app name for update
+  ansible.builtin.set_fact:
+    app_list: "{{ app_hosting_list.stdout_lines | regex_findall('(\\w+)\\s+(\\w+)',multiline=True) | default('No match found') }}"
+
+- name: Print the app name
+  ansible.builtin.debug:
+    msg: "The app name is {{ app_list }}"
+
+- name: Get app status
+  ansible.builtin.set_fact: app_status="{{ app_list[1][1] }}"
+  connection: local
+
+- name: Check if sensor exists
+  connection: local
+  ansible.builtin.uri:
+    validate_certs: false
+    url: "{{ center_url | mandatory }}/api/3.0/sensors"
+    method: GET
+    headers:
+      x-token-id: "{{ center_token | mandatory }}"
+    body_format: json
+  register: sensor_list
+
+- name: get sensor id
+  ansible.builtin.set_fact: sensor_id="{{ sensor_list.json | json_query(jmesquery) }}"
+  connection: local
+  vars:
+    jmesquery: "[? serialNumber==`{{ serial }}`].id"
+
+- name: default value for sensor id
+  ansible.builtin.set_fact: sensor_id="{{ sensor_id[0] if sensor_id != [] else '' }}"
+  connection: local
+
+- name: Check sensor status
+  connection: local
+  ansible.builtin.uri:
+    validate_certs: false
+    url: "{{ center_url | mandatory }}/api/3.0/sensors"
+    method: GET
+    headers:
+      x-token-id: "{{ center_token | mandatory }}"
+    body_format: json
+  register: sensor_list
+
+- name: get enrollment status
+  ansible.builtin.set_fact: enrollment_status="{{ sensor_list.json | json_query(jmesquery) }}"
+  connection: local
+  vars:
+    jmesquery: "[? serialNumber==`{{ serial }}`].status.enrollmentStatus"
+
+- name: Enroll
+  ansible.builtin.import_tasks: enroll.yml
+
+- name: Pause for 3 minutes to wait for app restart & center connectivity
+  ansible.builtin.pause:
+    minutes: 3
+  when: check_sensor_status is defined and check_sensor_status
+
+- name: Check sensor status
+  connection: local
+  ansible.builtin.uri:
+    validate_certs: false
+    url: "{{ center_url | mandatory }}/api/3.0/sensors"
+    method: GET
+    headers:
+      x-token-id: "{{ center_token | mandatory }}"
+    body_format: json
+  register: sensor_list
+  when: check_sensor_status is defined and check_sensor_status
+
+- name: get sensor status
+  ansible.builtin.set_fact: sensor_status="{{ sensor_list.json | json_query(jmesquery) }}"
+  connection: local
+  vars:
+    jmesquery: "[? serialNumber==`{{ serial }}`].status.operationalStatus"
+  when:
+    - check_sensor_status is defined
+
+- name: Check sensor is connected
+  ansible.builtin.assert:
+    that:
+      - sensor_status[0] == 'CONNECTED'
+  when: check_sensor_status is defined and check_sensor_status

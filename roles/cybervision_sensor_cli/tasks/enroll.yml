@@ -1,0 +1,150 @@
+---
+- name: Get application tar path
+  ansible.builtin.set_fact:
+    tar_path: "{{ application_tar_path | regex_findall('(.*)/.*.tar$') | default('Not found') }}"
+
+- name: Ensure a temporary directory for sensor provisioning download.
+  connection: local
+  ansible.builtin.tempfile:
+    path: "{{ tar_path[0] }}"
+    state: directory
+    suffix: sensor_provisioning
+  register: sensor_provisioning_temp_dir
+  notify: "Remove provisioning temporary directory"
+
+- name: Set sensor name used in Center
+  ansible.builtin.set_fact: name="{{ name | default('', true) }}"
+  connection: local
+
+- name: Create sensor
+  connection: local
+  ansible.builtin.uri:
+    validate_certs: false
+    url: "{{ center_url | mandatory }}/api/3.0/sensors"
+    method: POST
+    headers:
+      x-token-id: "{{ center_token | mandatory }}"
+    body_format: json
+    return_content: true
+    body: "{{ lookup('template', 'create_sensor.json.j2') }}"
+  register: sensor_creation_result
+  when:
+    - "'IC3000' not in group_names"
+    - sensor_id | length == 0
+
+- name: register sensor id
+  ansible.builtin.set_fact: sensor_id="{{ sensor_creation_result['json']['Id'] }}"
+  connection: local
+  when:
+    - "'IC3000' not in group_names"
+    - sensor_id | length == 0
+
+- name: Print provisioning package path
+  ansible.builtin.debug:
+    msg: "Provisioing package path {{ tar_path }}"
+
+- name: Get sensor provisioning
+  connection: local
+  ansible.builtin.uri:
+    validate_certs: false
+    url: "{{ center_url | mandatory }}/api/3.0/sensors/package"
+    method: POST
+    headers:
+      x-token-id: "{{ center_token | mandatory }}"
+    body_format: json
+    body: "{{ {'id': sensor_id} | to_json }}"
+    dest: '{{ sensor_provisioning_temp_dir.path }}/sbs-sensor-config-{{ serial }}.zip'
+  when: "'IC3000' not in group_names"
+
+- name: Copy provisioning package to the device
+  connection: local
+  cisco.ios.ios_command:
+    commands:
+      - command: "copy scp://{{ cv_scp_username }}:{{ cv_scp_password }}@{{ ansible_controller_ip }}//{{ sensor_provisioning_temp_dir.path }}/sbs-sensor-config-{{ serial }}.zip {{ storage }}"
+        prompt: 'Destination filename \[sbs-sensor-config-{{ serial }}.zip\]?'
+        answer: "\r"
+  vars:
+    ansible_command_timeout: 120
+
+- name: Copy the provisioning package from storage to the application
+  cisco.ios.ios_command:
+    commands: "app-hosting data appid {{ app_name }} copy {{ storage }}sbs-sensor-config-{{ serial }}.zip sbs-sensor-config-{{ serial }}.zip"
+  register: copy
+  vars:
+    ansible_command_timeout: 120
+
+- name: Create sensor
+  connection: local
+  ansible.builtin.uri:
+    validate_certs: false
+    url: "{{ center_url | mandatory }}/api/3.0/sensors"
+    method: POST
+    headers:
+      x-token-id: "{{ center_token | mandatory }}"
+    body_format: json
+    return_content: true
+    body: "{{ lookup('template', 'create_sensor_ic3k.json.j2') }}"
+  register: sensor_creation_result
+  when:
+    - "'IC3000' in group_names"
+    - sensor_id | length == 0
+
+- name: register sensor id
+  ansible.builtin.set_fact: sensor_id="{{ sensor_creation_result['json']['Id'] }}"
+  connection: local
+  when:
+    - "'IC3000' in group_names"
+    - sensor_id | length == 0
+
+- name: Get sensor provisioning
+  connection: local
+  ansible.builtin.uri:
+    validate_certs: false
+    url: "{{ center_url | mandatory }}/api/3.0/sensors/package"
+    method: POST
+    headers:
+      x-token-id: "{{ center_token | mandatory }}"
+    body_format: json
+    return_content: true
+    body: "{{ {'id': sensor_id, 'localmanager_password': iox_password} | to_json }}"
+    dest: "{{ sensor_provisioning_temp_dir.path }}/{{ serial }}.zip"
+  when: "'IC3000' in group_names"
+
+- name: Extract provisioning package
+  connection: local
+  ansible.builtin.unarchive:
+    src: "{{ sensor_provisioning_temp_dir.path }}/{{ serial }}.zip"
+    dest: "{{ sensor_provisioning_temp_dir.path }}"
+  when: "'IC3000' in group_names"
+
+- name: Upload provisioning package
+  connection: local
+  ansible.builtin.uri:
+    validate_certs: false
+    url: https://{{ iox_base_url }}/iox/api/v2/hosting/apps/{{ app_name }}/appdata/cybervision-sensor-config.zip
+    method: POST
+    headers:
+      X-Token-Id: "{{ auth_token }}"
+    status_code: 201
+    src: "{{ sensor_provisioning_temp_dir.path }}/{{ serial }}/appconfigs/cybervision-sensor-config.zip"
+  when: "'IC3000' in group_names"
+
+- name: Stop app
+  connection: local
+  ansible.builtin.uri:
+    validate_certs: false
+    url: https://{{ iox_base_url }}/iox/api/v2/hosting/apps/{{ app_name }}/state?action=stop
+    method: POST
+    headers:
+      X-Token-Id: "{{ auth_token }}"
+  when: "'IC3000' in group_names"
+
+- name: Start app
+  connection: local
+  ansible.builtin.uri:
+    validate_certs: false
+    url: https://{{ iox_base_url }}/iox/api/v2/hosting/apps/{{ app_name }}/state?action=start
+    method: POST
+    headers:
+      X-Token-Id: "{{ auth_token }}"
+  when: "'IC3000' in group_names"

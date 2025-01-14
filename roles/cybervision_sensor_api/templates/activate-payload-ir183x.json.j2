@@ -1,0 +1,36 @@
+{
+  "resources": {
+    "profile": "exclusive",
+    "network": [
+      {
+        "interface-name": "eth0",
+        "network-name": "VPG1",
+        "ipv4": {
+          "default": true,
+          "ip": "{{collection_address | default('169.254.0.2')}}",
+          "prefix": "{{collection_prefix | default('30')}}",
+          "mode": "static",
+          "gateway": "{{collection_gateway | default('169.254.0.1')}}"
+        }
+      },
+      {
+        "interface-name": "eth1",
+        "port_map": {},
+        "network-name": "VPG0",
+        "mode": null,
+        "ipv6": {},
+        "ipv4": {
+          "default": false,
+          "ip": "{{capture_address | default('169.254.1.2')}}",
+          "prefix": "{{capture_prefix | default('30')}}",
+          "mode": "static",
+          "gateway": ""
+        }
+      }
+    ],
+    "disk": "472"
+  },
+  "startup": {
+    "runtime_options": "--rm --tmpfs /tmp:rw,size=128m{{ runtime_option_ztp }}"
+  }
+}

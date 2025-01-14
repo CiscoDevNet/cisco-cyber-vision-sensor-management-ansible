@@ -1,0 +1,24 @@
+---
+all:
+  children:
+    C9XXX:
+      hosts:
+        172.16.10.11:
+          collection_address: 192.168.10.11
+          collection_gateway: 192.168.10.1
+          collection_prefix: 24
+          iox_port: 443
+          sensor_name: "C9300-1"
+          span: erspan # OR rspan
+          capture_mode: all
+          capture_filter: not arp
+          active_discovery_enabled: false
+          active_discovery_interfaces:
+            - "0": {...}
+              ip: "10.1.10.11"
+              netmask: "24"
+              vlan: 10
+              iface: "eth2"
+      vars:
+        ansible_connection: ansible.netcommon.network_cli
+        ansible_network_os: cisco.ios.ios

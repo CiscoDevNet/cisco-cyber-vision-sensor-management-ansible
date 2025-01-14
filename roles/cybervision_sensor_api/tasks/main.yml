@@ -1,0 +1,575 @@
+---
+- name: Register authorization token
+  connection: local
+  block:
+    - name: Register IOx URL
+      ansible.builtin.set_fact: 
+        iox_base_url="{{ inventory_hostname }}:{{ iox_port }}"
+
+    - name: Get Token
+      ansible.builtin.uri:
+        validate_certs: false
+        url: https://{{ iox_base_url }}/iox/api/v2/hosting/tokenservice
+        method: POST
+        headers:
+          Authorization: Basic {{ (iox_login + ':' + iox_password) | b64encode }}
+        return_content: true
+      register: result
+
+    - name: register auth token
+      ansible.builtin.set_fact: auth_token="{{ result.content | from_json | json_query('token.id') }}"
+
+- name: Extract application
+  block:
+    - name: Ensure a temporary directory for app extraction
+      connection: local
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: app_extract
+      register: app_extract_temp_dir
+      notify: "Remove app temporary directory"
+
+    - name: Get the serial
+      connection: local
+      ansible.builtin.uri:
+        validate_certs: false
+        url: https://{{ iox_base_url }}/iox/api/v2/hosting/platform/sysinfo
+        method: GET
+        headers:
+          X-Token-Id: "{{ auth_token }}"
+      register: sysinfo
+
+    - name: Register serial
+      ansible.builtin.set_fact:
+        sensor_serial: "{{ sysinfo['json']['system_id'] }}"
+      connection: local
+
+    - name: Prepare ZTP deployment
+      ansible.builtin.import_tasks: ztp.yml
+      when: ztp_deployment
+
+    - name: Extract application
+      connection: local
+      ansible.builtin.unarchive:
+        src: "{{ application_tar_path }}"
+        dest: "{{ app_extract_temp_dir.path }}"
+
+    - name: Load package.yaml
+      ansible.builtin.include_vars:
+        file: "{{ app_extract_temp_dir.path }}/package.yaml"
+        name: package
+
+- name: Check app type
+  block:
+    - name: Check app type (IC3000)
+      ansible.builtin.assert:
+        that:
+          - package.app.cpuarch == "x86_64"
+          - (package.info.version <= "4.2.6" and package.app.type == "vm") or (package.info.version >= "4.3.0" and package.app.type == "docker")
+        fail_msg: |
+          "CPU architecture {{ package.app.cpuarch }} or app type {{ package.app.type }} is not compatible with
+          the device architecture 'x86_64' or app type ('vm' for versions less than 4.2.6, or 'docker' for versions 4.3.0.
+          Please check sensor .tar file."
+        success_msg: "CPU architecture and app type are compatible with the device."
+      when: "'IC3000' in group_names"
+
+    - name: Check app type (C9XXX)
+      ansible.builtin.assert:
+        that:
+          - package.app.cpuarch == "x86_64"
+          - package.app.type == "docker"
+        fail_msg: |
+          "CPU architecture {{ package.app.cpuarch }} or app type {{ package.app.type }} is not compatible with
+          the device architecture 'x86_64' or app type 'docker'.  Please check sensor .tar file." 
+        success_msg: "CPU architecture and app type are compatible with the device."
+      when: "'C9XXX' in group_names or 'IR8340' in group_names"
+
+    - name: Check app type (IR1XXX, IE3X00 and IE9300)
+      ansible.builtin.assert:
+        that:
+          - package.app.cpuarch == "aarch64"
+          - package.app.type == "docker"
+        fail_msg: |
+          "CPU architecture {{ package.app.cpuarch }} or app type {{ package.app.type }} is not compatible with
+          the device architecture 'aarch64' or app type 'docker'.  Please check sensor .tar file."
+        success_msg: "CPU architecture and app type are compatible with the device."
+      when: "'IR1XXX' in group_names or 'IE3X00' in group_names or 'IE9300' in group_names"
+
+- name: Check versions
+  block:
+    - name: Get center version
+      connection: local
+      ansible.builtin.uri:
+        validate_certs: false
+        url: "{{ center_url | mandatory }}/api/3.0/version"
+        method: GET
+        headers:
+          x-token-id: "{{ center_token | mandatory }}"
+        body_format: json
+      register: center_version_result
+
+    - name: Register center version json
+      ansible.builtin.set_fact: center_version_json="{{ center_version_result.json }}"
+      connection: local
+
+    - name: Register center version (major, minor, increment)
+      ansible.builtin.set_fact: center_version="{{ center_version_json.major }}.{{ center_version_json.minor }}.{{ center_version_json.incr }}"
+      connection: local
+
+    - name: Register sensor version
+      ansible.builtin.set_fact: sensor_version="{{ package.info.version.split('+')[0] }}"
+      connection: local
+
+    - name: Check center version
+      ansible.builtin.assert:
+        that:
+          - center_version is version(minimum_cvc_version, '>=')
+        fail_msg: |
+          "Center version {{ center_version }} is lower than minimum requirement, Version {{ minimum_cvc_version }}.
+          Please update center to Version {{ minimum_cvc_version }} or greater."
+
+- name: Check install or update
+  block:
+    - name: Non Exclusive mode
+      connection: local
+      block:
+        - name: Set app name for install/update (non-exclusive mode)
+          ansible.builtin.set_fact:
+            app_name: "{{ cv_default_app_name }}"
+
+        - name: Try to get the app from the API (non-exclusive mode)
+          ansible.builtin.uri:
+            validate_certs: false
+            url: https://{{ iox_base_url }}/iox/api/v2/hosting/apps/{{ app_name }}
+            method: GET
+            headers:
+              X-Token-Id: "{{ auth_token }}"
+            status_code:
+              - 200
+              - 404
+          register: installed_app_output
+
+        - name: Detect install or update mode (non-exclusive mode)
+          ansible.builtin.set_fact:
+            mode: "{{ 'install' if (installed_app_output['status'] == 404) else 'update' }}"
+            installed_app: "{{ installed_app_output['json'] }}"
+      when:
+        - exclusive_mode is false
+    
+    - name: Exclusive mode
+      block:
+      - name: Get the apps from the API (exclusive mode)
+        connection: local
+        ansible.builtin.uri:
+          validate_certs: false
+          url: https://{{ iox_base_url }}/iox/api/v2/hosting/apps
+          method: GET
+          headers:
+            X-Token-Id: "{{ auth_token }}"
+        register: app_list
+
+      - name: Detect install or update (exclusive mode)
+        connection: local
+        ansible.builtin.set_fact:
+          mode: "{{ 'install' if ((app_list['json'] | length) == 0) else 'update' }}"
+
+      - name: Set app name for install (exclusive mode)
+        connection: local
+        ansible.builtin.set_fact:
+          app_name: "{{ cv_default_app_name }}"
+        when:
+          - mode == 'install'
+
+      - name: Set app config for update (exclusive mode)
+        ansible.builtin.set_fact:
+          installed_app: "{{ app_list.json[0] }}"
+        when:
+          - mode == 'update'
+
+      - name: Set app name for update (exclusive mode)
+        connection: local
+        ansible.builtin.set_fact:
+          app_name: "{{ installed_app.id }}"
+        when:
+          - mode == 'update'
+      when:
+          - exclusive_mode is true
+
+- name: Set deployment profile (non-exclusive mode)
+  connection: local
+  ansible.builtin.set_fact:
+    deployment_profile: custom
+  when:
+    - exclusive_mode is false
+
+- name: Disk Size
+  connection: local
+  block:
+    - name: Register disk size (IC3000)
+      ansible.builtin.set_fact: disk_size="1024"
+      when: 
+        - "'IC3000' in group_names"
+
+    - name: Disk Size (C9XXX, IE9300, IE3X00, IR8340)
+      block:
+        - name: Get the disk size (C9XXX, IE9300, IE3X00, IR8340)
+          ansible.builtin.uri:
+            validate_certs: false
+            url: https://{{ iox_base_url }}/iox/api/v2/hosting/platform/capability
+            method: GET
+            headers:
+              X-Token-Id: "{{ auth_token }}"
+          register: capability
+
+        - name: Disk size (install mode)
+          block:
+            - name: Register available disk size (C9XXX, IE9300, IE3X00, IR8340) - (install mode)
+              ansible.builtin.set_fact:
+                available_disk: "{{ capability | json_query(jmesquery) }}"
+              vars:
+                jmesquery: 'json.compute_nodes[0].resources.storage.available'
+
+            - name: Calculate reserved disk size (C9XXX, IE9300, IE3X00, IR8340) - (install mode)
+              ansible.builtin.set_fact:
+                reserved_disk: "{{ 150 * 2.5 * 3 | round(0, 'ceil') }}"
+
+            - name: Calculate allocation disk size (C9XXX, IE9300, IE3X00, IR8340) - (install mode)
+              ansible.builtin.set_fact:
+                disk_size: "{{ ( available_disk | int ) - ( reserved_disk | int ) }}"
+          when: 
+            - mode == 'install'
+
+        - name: Disk size (update mode)
+          block:
+            - name: Retrieve allocated disk size (C9XXX, IE9300, IE3X00, IR8340) - (update mode)
+              ansible.builtin.uri:
+                validate_certs: false
+                url: https://{{ iox_base_url }}/iox/api/v2/hosting/platform/capability
+                method: GET
+                headers:
+                  X-Token-Id: "{{ auth_token }}"
+              register: capability
+
+            - name: Register allocated disk size (C9XXX, IE9300, IE3X00, IR8340) - (update mode)
+              ansible.builtin.set_fact:
+                disk_size: "{{ capability | json_query(jmesquery) }}"
+              vars:
+                jmesquery: 'json.compute_nodes[0].resources.storage.data_disk_details[0].asked'
+
+            - name: Register allocated disk size (C9XXX, IE9300, IE3X00, IR8340) - (update mode)
+              ansible.builtin.set_fact:
+                disk_size: "{{ capability | json_query(jmesquery) }}"
+              vars:
+                jmesquery: 'json.compute_nodes[0].resources.storage.data_disk_details[0].actual'
+              when: 
+                - disk_size == '0'
+          when:
+            - mode == 'update'
+      when:
+        - "'C9XXX' in group_names or 'IE9300' in group_names or 'IE3X00' in group_names or 'IR8340' in group_names"
+
+- name: CPU (non-exclusive mode)
+  connection: local
+  block:
+    - name: CPU (install mode)
+      block:
+        - name: Get the available and total CPU
+          ansible.builtin.uri:
+            validate_certs: false
+            url: https://{{ iox_base_url }}/iox/api/v2/hosting/platform/capability
+            method: GET
+            headers:
+              X-Token-Id: "{{ auth_token }}"
+          register: capability
+
+        - name: Register available CPU (non-exclusive mode) - (install mode)
+          ansible.builtin.set_fact:
+            available_cpu: "{{ capability | json_query(jmesquery) }}"
+          vars:
+            jmesquery: 'json.compute_nodes[0].resources.cpu.available'
+
+        - name: Set CPU limit (non-exclusive mode) - (install mode)
+          ansible.builtin.set_fact:
+            cpu_limit: "{{ (available_cpu | int) - (non_exclusive_reserved_cpu | int) }}"
+      when:
+        - mode == 'install'
+
+    - name: Set CPU limit (non-exclusive mode) - (update mode)
+      ansible.builtin.set_fact:
+        cpu_limit: "{{ installed_app.resources.cpu }}"
+      when:
+        - mode == 'update'
+
+    - name: Check that CPU limit is high enough
+      ansible.builtin.fail:
+        msg: CPU limit is too low (min 500 units)
+      when:
+        - cpu_limit | int < 500
+  when:
+    - exclusive_mode is false
+
+- name: RAM (non-exclusive mode)
+  connection: local
+  block:
+    - name: RAM (install mode)
+      block:
+        - name: Get the available memory (non-exclusive mode) - (install mode)
+          ansible.builtin.uri:
+            validate_certs: false
+            url: https://{{ iox_base_url }}/iox/api/v2/hosting/platform/capability
+            method: GET
+            headers:
+              X-Token-Id: "{{ auth_token }}"
+          register: capability
+
+        - name: Register available memory (non-exclusive mode) - (install mode)
+          ansible.builtin.set_fact:
+            available_memory: "{{ capability | json_query(jmesquery) }}"
+          vars:
+            jmesquery: 'json.compute_nodes[0].resources.memory.available'
+
+        - name: Set memory limit (non-exclusive mode) - (install mode)
+          ansible.builtin.set_fact:
+            memory_limit: "{{ (available_memory | int) - (non_exclusive_reserved_memory | int) }}"
+      when:
+        - mode == 'install'
+
+    - name: Set memory limit (non-exclusive mode) - (update mode)
+      ansible.builtin.set_fact:
+        memory_limit: "{{ installed_app.resources.memory }}"
+      when:
+        - mode == 'update'
+
+    - name: Check that memory limit is high enough
+      ansible.builtin.fail:
+        msg: Memory limit is too low (min 500 MB)
+      when:
+        - memory_limit | int < 500
+  when:
+    - exclusive_mode is false
+
+- name: Get app status
+  ansible.builtin.set_fact: 
+    app_status: "{{ installed_app.app_checksums.app_state }}"
+  connection: local
+  when: mode == 'update'
+
+- name: Sensor id
+  connection: local
+  block:
+    - name: Check if sensor exists
+      ansible.builtin.uri:
+        validate_certs: false
+        url: "{{ center_url | mandatory }}/api/3.0/sensors"
+        method: GET
+        headers:
+          x-token-id: "{{ center_token | mandatory }}"
+        body_format: json
+      register: sensor_list
+
+    - name: get sensor id
+      ansible.builtin.set_fact: 
+        sensor_id: "{{ sensor_list.json | json_query(jmesquery) }}"
+      vars:
+        jmesquery: "[? serialNumber==`{{ sensor_serial }}`].id"
+
+    - name: default value for sensor id
+      ansible.builtin.set_fact: 
+        sensor_id: "{{ sensor_id[0] if sensor_id != [] else '' }}"
+
+- name: Install the app
+  ansible.builtin.import_tasks: install.yml
+  when: mode == 'install'
+
+- name: Clear previous application payload
+  cisco.ios.ios_config:
+    save_when: changed
+    replace: block
+    lines:
+      - no app-hosting appid {{ app_name }}
+  when: 
+    - "'IC3000' not in group_names"
+
+- name: Unsupported update on IC3000
+  ansible.builtin.assert:
+    that:
+      - "'IC3000' not in group_names"
+    fail_msg: "Update is not supported for IC3000. Please use combined update or sbs-update for this sensor."
+  when:
+    - mode == 'update'
+
+- name: Update the app
+  ansible.builtin.import_tasks: update.yml
+  when: 
+    - mode == 'update'
+
+- name: Activation payload
+  connection: local
+  block:
+    - name: Determine activation payload for IR1XXX device
+      block:
+        - name: Determine chassis type of IR1XXX device
+          cisco.ios.ios_command:
+            commands: show platform
+          register: chassis_type
+
+        - name: No SSD
+          block:
+            - name: template name for activation payload (IR1833 no SSD)
+              ansible.builtin.set_fact:
+                activation_payload_template: "activate-payload-ir183x.json.j2"
+              when:
+                - "'IR1833' in chassis_type.stdout[0]"
+
+            - name: template name for activation payload (IR1101 no SSD)
+              ansible.builtin.set_fact:
+                activation_payload_template: "activate-payload-ir1101.json.j2"
+              when:
+                - "'IR1101' in chassis_type.stdout[0]"
+          when:
+            - not config_ssd
+
+        - name: With SSD
+          block:
+            - name: template name for activation payload (IR1833 with SSD)
+              ansible.builtin.set_fact: 
+                activation_payload_template: "activate-payload-ir183x_SSD.json.j2"
+              when:
+                - "'IR1833' in chassis_type.stdout[0]"
+
+            - name: template name for activation payload (IR1101 with SSD)
+              ansible.builtin.set_fact: 
+                activation_payload_template: "activate-payload-ir1101_SSD.json.j2"
+              when: 
+                - "'IR1101' in chassis_type.stdout[0]"
+          when:
+            - config_ssd
+            - has_ssd
+      when:
+        - "'IR1XXX' in group_names"
+
+    - name: template name for activation payload (IC3000)
+      ansible.builtin.set_fact: 
+        activation_payload_template: "activate-payload-ic3000.json.j2"
+      when: 
+        - "'IC3000' in group_names"
+
+    - name: template name for activation payload (C9XXX)
+      ansible.builtin.set_fact: 
+        activation_payload_template: "activate-payload-cat9k.json.j2"
+      when: 
+        - "'C9XXX' in group_names"
+
+    - name: template name for activation payload (IE3X00)
+      ansible.builtin.set_fact: 
+        activation_payload_template: "activate-payload-ie3X00.json.j2"
+      when: 
+        - "'IE3X00' in group_names"
+
+    - name: template name for activation payload (IR8340)
+      ansible.builtin.set_fact: 
+        activation_payload_template: "activate-payload-ir8340.json.j2"
+      when: 
+        - "'IR8340' in group_names"
+
+    - name: template name for activation payload (IE9300)
+      ansible.builtin.set_fact: 
+        activation_payload_template: "activate-payload-ie9300.json.j2"
+      when: 
+        - "'IE9300' in group_names"
+
+    - name: Assert that we found an activation payload template
+      ansible.builtin.assert:
+        that:
+          - activation_payload_template is defined
+          - activation_payload_template | length > 0
+        fail_msg: "Activation payload not found.  Check inventory.yml group_name assignment."
+        success_msg: "Activation payload found."
+
+- name: Activate app
+  ansible.builtin.import_tasks: activate.yml
+
+- name: Start App
+  ansible.builtin.import_tasks: start.yml
+
+- name: Check sensor status
+  connection: local
+  block:
+    - name: Check if sensor exists
+      ansible.builtin.uri:
+        validate_certs: false
+        url: "{{ center_url | mandatory }}/api/3.0/sensors"
+        method: GET
+        headers:
+          x-token-id: "{{ center_token | mandatory }}"
+        body_format: json
+      register: sensor_list
+
+    - name: Get sensor id
+      ansible.builtin.set_fact: 
+        sensor_id: "{{ sensor_list.json | json_query(jmesquery) }}"
+      vars:
+        jmesquery: "[? serialNumber==`{{ sensor_serial }}`].id"
+
+    - name: Default value for sensor id
+      ansible.builtin.set_fact: 
+        sensor_id: "{{ sensor_id[0] if sensor_id != [] else '' }}"
+
+    - name: Check sensor status
+      ansible.builtin.uri:
+        validate_certs: false
+        url: "{{ center_url | mandatory }}/api/3.0/sensors"
+        method: GET
+        headers:
+          x-token-id: "{{ center_token | mandatory }}"
+        body_format: json
+      register: sensor_list
+
+- name: get enrollment status
+  ansible.builtin.set_fact: 
+    enrollment_status: "{{ sensor_list.json | json_query(jmesquery) }}"
+  connection: local
+  vars:
+    jmesquery: "[? serialNumber==`{{ sensor_serial }}`].status.enrollmentStatus"
+
+- name: Enroll
+  ansible.builtin.import_tasks: enroll.yml
+  when: 
+    - enrollment_status[0] is not defined or enrollment_status[0] != 'ENROLLED'
+
+- name: Pause for 3 minutes to wait for app restart & center connectivity
+  ansible.builtin.pause:
+    minutes: 3
+  when: 
+    - check_sensor_status is defined
+    - check_sensor_status
+
+- name: Check sensor status
+  block:
+    - name: Check sensor status
+      connection: local
+      ansible.builtin.uri:
+        validate_certs: false
+        url: "{{ center_url | mandatory }}/api/3.0/sensors"
+        method: GET
+        headers:
+          x-token-id: "{{ center_token | mandatory }}"
+        body_format: json
+      register: sensor_list
+      when: 
+        - check_sensor_status
+
+    - name: get sensor status
+      ansible.builtin.set_fact: sensor_status="{{ sensor_list.json | json_query(jmesquery) }}"
+      connection: local
+      vars:
+        jmesquery: "[? serialNumber==`{{ sensor_serial }}`].status.operationalStatus"
+
+    - name: Check sensor is connected
+      ansible.builtin.assert:
+        that:
+          - sensor_status[0] == 'CONNECTED'
+      when: 
+        - check_sensor_status
+  when:
+    - check_sensor_status is defined

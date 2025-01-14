@@ -1,0 +1,91 @@
+---
+all:
+  children:
+    ic3k:
+      hosts:
+        192.168.1.104:
+          mgmt_netmask: 255.255.255.0
+          mgmt_gateway: 192.168.1.1
+          collection_address: 192.168.1.4
+          collection_prefix: 24
+          iox_login: <username>
+          iox_password: <password>
+          iox_port: 8443
+          check_sensor_status: true
+          capture_mode: custom
+          capture_filter: not arp
+          check_sensor_and_center_version: false
+          active_discovery_interfaces:
+            - ip: "1.2.3.4"
+              netmask: 24
+              vlan: 14
+              iface: "eth1"
+
+    ie3X00:
+      hosts:
+        192.168.1.106:
+          collection_address: 192.168.1.6
+          collection_prefix: 24
+          iox_login: <username>
+          iox_password: <password>
+          iox_port: 443
+          capture_mode: custom
+          capture_filter: not arp
+          active_discovery: true
+          active_discovery_interfaces:
+            - ip: "1.2.3.4"
+              netmask: 24
+              vlan: 14
+              iface: "eth2"
+
+    catalyst9k:
+      hosts:
+        192.168.1.101:
+          name: "cat9300_2"
+          collection_address: 192.168.1.1
+          collection_prefix: 24
+          iox_login: <username>
+          iox_password: <password>
+          iox_port: 443
+          capture_mode: custom
+          capture_filter: not arp
+          active_discovery: true
+          active_discovery_interfaces:
+            - ip: "1.2.3.4"
+              netmask: 24
+              vlan: 14
+              iface: "eth2"
+
+   ir8340:
+      hosts:
+        192.168.1.107:
+          iox_login: <username>
+          iox_password: <password>
+          iox_port: 443
+          name: "sumatra"
+          capture_mode: custom
+          capture_filter: not arp
+          active_discovery: true
+          active_discovery_interfaces:
+            - ip: "1.2.3.4"
+              netmask: 24
+              vlan: 14
+              iface: "eth2"
+
+    ie9300:
+      hosts:
+        192.168.1.108:
+          name: "cat9300_2"
+          collection_address: 192.168.1.8
+          collection_prefix: 24
+          iox_login: <username>
+          iox_password: <password>
+          iox_port: 443
+          capture_mode: custom
+          capture_filter: not arp
+          active_discovery: true
+          active_discovery_interfaces:
+            - ip: "1.2.3.4"
+              netmask: 24
+              vlan: 14
+              iface: "eth2"

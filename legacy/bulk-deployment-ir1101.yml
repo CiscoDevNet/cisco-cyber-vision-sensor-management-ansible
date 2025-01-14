@@ -1,0 +1,11 @@
+- hosts: ir1101
+  gather_facts: false
+  vars:
+    center_token: ics-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    center_url: https://<cyber vision center IP address>
+  vars_prompt:
+    - name: application_tar_path
+      prompt: CyberVision app path (aarch64 version)?
+      private: false
+  roles:
+    - cybervision_sensor

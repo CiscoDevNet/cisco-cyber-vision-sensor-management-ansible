@@ -1,0 +1,9 @@
+product,hostname,collection_address,collection_gateway,collection_prefix,iox_port,name,capture_mode,active_discovery
+C9XXX,172.16.10.11,192.168.10.11,192.168.10.1,24,443,C9300-1,all,false
+IC3000,172.16.10.21,192.168.10.21,192.168.10.1,24,443,IC3000-1,all,false
+IE3X00,172.16.10.31,192.168.10.31,192.168.10.1,24,443,IE3400-1,all,false
+IE3X00,172.16.10.32,192.168.10.32,192.168.10.1,24,443,IE3300-1,all,false
+IE9300,172.16.10.41,192.168.10.41,192.168.10.1,24,443,IE9320-1,all,false
+IR1XXX,172.16.10.51,169.254.0.2,null,30,443,IR1100-1,all,false
+IR1XXX,172.16.10.52,169.254.0.2,null,30,443,IR1833-1,all,false
+IR8340,172.16.10.61,169.254.0.2,null,30,443,IR8340-1,all,false

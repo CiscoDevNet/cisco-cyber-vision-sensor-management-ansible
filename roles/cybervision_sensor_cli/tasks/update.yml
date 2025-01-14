@@ -1,0 +1,62 @@
+---
+- name: Unsupported update on IC3K
+  ansible.builtin.assert:
+    that:
+      - "'IC3000' not in group_names"
+    fail_msg: "Update is not supported for IC3K. Please use combined update or sbs-update for this sensor."
+
+- name: Upgrade app
+  connection: local
+  cisco.ios.ios_command:
+    commands: "app-hosting upgrade appid {{ app_name }} package {{ storage }}{{ application_file[0] }}"
+  register: Upgrade
+
+- name: Wait for upgrade to complete
+  block:
+    - name: Wait for previous app to uninstall
+      cisco.ios.ios_command:
+        commands: "show app-hosting list"
+      register: app_list
+      until: "'No App found' in app_list.stdout[0]"
+      retries: 20
+      delay: 5
+
+    - name: Pause for 30 seconds to upgrade the app
+      ansible.builtin.pause:
+        seconds: 30
+    
+    - name: Assert app is running
+      cisco.ios.ios_command:
+        commands: "show app-hosting list"
+      register: app_list
+      until: "'RUNNING' in app_list.stdout_lines[0][2]"
+      retries: 20
+      delay: 5
+
+  rescue:
+    - name: Set log time window variable (minutes)
+      ansible.builtin.set_fact:
+        log_time_window: 1
+
+    - name: Retrieve app-hosting logs
+      cisco.ios.ios_command:
+        commands: "show log | section app-hosting"
+      register: app_hosting_logs
+
+    - name: Filter recent log entries
+      ansible.builtin.set_fact:
+        recent_app_hosting_logs: "{{ app_hosting_logs.stdout_lines[0] | filter_recent_logs(log_time_window) }}"
+
+    - name: Assert upgrade did not fail
+      ansible.builtin.assert:
+        that:
+          - "'Upgraded Successfully' in recent_app_hosting_logs[-1]"
+        fail_msg: "Upgrade failed, log message: {{ recent_app_hosting_logs[-1] }}"
+        success_msg: "Upgrade successful, log message: {{ recent_app_hosting_logs[-1] }}"
+
+- name: Remove previous version .tar file after update
+  cisco.ios.ios_command:
+    commands:
+      - command: "delete {{ storage }}{{ application_file[0] }}"
+    prompt: 'Delete filename \[{{ application_file[0] }}\]?'
+    answer: "\r"

@@ -1,0 +1,319 @@
+---
+- name: Configure Cisco IE9300 switches to support CCV Sensor Deployment
+  hosts: IE9300
+  gather_facts: false
+  vars_files:
+    - vars.yml
+    - secrets.yml
+  vars:
+    minimum_ios_version: "17.09.01"
+    minimum_cvc_version: "3.2.1"
+    center_url: "{{ cv_details.center_url }}"
+    application_tar_path: "{{ cv_details.application_tar_path }}"
+    cv_collection_vlan: "{{ cv_details.cv_collection_vlan }}"
+    cv_capture_vlan: "{{ cv_details.cv_capture_vlan }}"
+    cv_switchport: "{{ cv_details.cv_switchport }}"
+    cv_monitor_session_id: "{{ cv_details.monitor_session_id }}"
+    cv_monitor_session_src: "{{ cv_details.monitor_session_src }}"
+    cv_scp_username: "{{ cv_scp_username }}"
+    cv_scp_password: "{{ cv_scp_password }}"
+    ansible_controller_ip: "{{ cv_details.ansible_controller_ip }}"
+    cv_default_app_name: "{{ cv_details.default_app_name }}"
+    cv_deployment_method: "{{ cv_details.deployment_method }}"
+    ztp_deployment: "{{ cv_details.ztp_deployment }}"
+    exclusive_mode: "{{ cv_details.exclusive_mode }}"
+  
+  pre_tasks:
+  - name: Gather Cisco facts
+    cisco.ios.ios_facts:
+      gather_subset: hardware
+
+  - name: Assert that device version is greater than minimum version
+    ansible.builtin.assert:
+      that: "ansible_net_version > minimum_ios_version"
+      fail_msg: "Current version {{ ansible_net_version }} is lower than minimum requirement, Version {{ minimum_ios_version }}.  Please update device firmware to Version {{ minimum_ios_version }} or greater."
+      success_msg: "Current version {{ ansible_net_version }} meets minimum version requirements."
+
+  - name: Detect if host needs new install or update
+    block:
+      - name: Show app-hosting list
+        cisco.ios.ios_command:
+          commands: 'show app-hosting list'
+        register: app_hosting_list
+
+      - name: Detect install or update
+        ansible.builtin.set_fact: mode="{{ 'install' if 'No App found' in app_hosting_list.stdout[0] else 'update' }}"
+        connection: local
+
+  - name: Set Cyber Vision Sensor app name
+    block:
+      - name: For updating the app
+        block:
+          - name: Get the app name for update
+            ansible.builtin.set_fact:
+              app_list: "{{ app_hosting_list.stdout_lines | regex_findall('(\\w+)\\s+(\\w+)',multiline=True) | default('No match found') }}"
+
+          - name: Set app name for update
+            ansible.builtin.set_fact: app_name="{{ app_list[1][0] }}"
+            connection: local
+        when: mode == 'update'
+
+      - name: Set app name for install
+        ansible.builtin.set_fact: app_name="{{ cv_default_app_name }}"
+        connection: local
+        when: mode == 'install'
+
+  - name: Configure for new sensor installation
+    block:
+    - name: Check SD Flash presence, formatting, and partitioning for IOx
+      block:
+        - name: Check if SD Flash is present
+          cisco.ios.ios_command:
+            commands: show file system
+          register: sd_presence
+
+        - name: Fail if SD Flash is not present
+          ansible.builtin.fail:
+            msg: SD Flash is NOT inserted, please insert an SD Flash card, format to ext4, and partition for IOx.
+          when: "'sdflash:' not in sd_presence.stdout | first"
+
+        - name: Retrieve information about SDFlash partitioning 
+          block:
+            - name: Retrieve information about SDFlash partitioning
+              cisco.ios.ios_command:
+                commands: 'show sdflash: filesys'
+              register: sdflash_filesys
+              check_mode: no
+          rescue:
+            - name: Error in SD Flash partitioning
+              ansible.builtin.fail:
+                msg: "An exception occured while retrieving information about SD Flash partitioning - SD Flash needs reformatting and partitioning"
+              ignore_errors: yes
+            - name: Set_fact repartition_sdflash
+              ansible.builtin.set_fact: 
+                repartition_sdflash: true
+
+        - name: Verify SD Flash partitioning
+          block:
+            - name: Verify SD Flash partitioning
+              ansible.builtin.assert:
+                that:
+                - ("'IOx Partition Exists' in sdflash_filesys.stdout_lines | first") or ("'IOx Partition Type: ext4' in sdflash_filesys.stdout_lines | first")
+                fail_msg: SD Flash doesn't have IOx Partition or type is not ext4. SD Flash will be reformatted and partitioned for IOx.
+                success_msg: SD Flash partitioning OK
+              when: sdflash_filesys is defined
+          rescue:
+            - name: Error in SD Flash partitioning validation
+              ansible.builtin.fail:
+                msg: "An Exception occured while verifying SD Flash partitioning - SD Flash needs reformatting and partitioning"
+              ignore_errors: yes
+
+            - name: Set_fact repartition_sdflash
+              ansible.builtin.set_fact: 
+                repartition_sdflash: true
+
+        - name: Verify whether the SDFlash is full or not
+          block:
+            - name: Verify whether the SDFlash is full or not
+              cisco.ios.ios_command:
+                commands: 'dir sdflash:'
+              register: sdflash_size
+
+            - name: Print the SD-Flash size
+              ansible.builtin.debug:
+                var: sdflash_size.stdout_lines
+
+            - name: Extract Free bytes
+              ansible.builtin.set_fact:
+                free_bytes: "{{ sdflash_size.stdout | regex_findall('(\\d+)\\s+bytes\\s+free') | default('Not found') }}"
+            
+            - name: Display free bytes
+              ansible.builtin.set_fact:
+                sdflash_full: "{{ free_bytes[0] | int < 1024 }}"
+            
+            - name: Print SDFlash status
+              ansible.builtin.debug:
+                msg: "sdflash is {{ 'full with the SDFlash size of ' ~ free_bytes[0] ~ ' bytes' if sdflash_full else 'normal with the SDFlash size of ' ~ free_bytes[0] ~ ' bytes' }}"
+            
+            - name: Print free bytes
+              ansible.builtin.debug:
+                msg: "Free bytes are {{ free_bytes[0] }}"
+
+        - name: Format and partition SD Flash if necessary
+          block:
+          - name: Disable IOx before repartitioning
+            cisco.ios.ios_config:
+              commands: no iox
+
+          - name: Verify IOx is disabled before repartitioning
+            cisco.ios.ios_command:
+              commands: show iox
+            register: iox_status
+            until: >
+              iox_status.stdout_lines[0] | regex_search('IOx service \(CAF\).*Not Running') and
+              iox_status.stdout_lines[0] | regex_search('IOx service \(HA\).*Not Running') and
+              iox_status.stdout_lines[0] | regex_search('IOx service \(IOxman\).*Not Running') and
+              iox_status.stdout_lines[0] | regex_search('IOx service \(Sec storage\).*Not Running') and
+              iox_status.stdout_lines[0] | regex_search('Dockerd.*Not Running')
+            retries: 10
+            delay: 5
+
+          - name: Format and partition SD Flash for IOx
+            cisco.ios.ios_command: 
+              commands: 'partition sdflash: iox 73'
+            when: repartition_sdflash and partition_sdflash | default(false)
+
+          - name: Assert partition operation is complete
+            cisco.ios.ios_command:
+              commands: "show sdflash: filesys"
+            register: sdflash_status
+            until: >
+              "'IOx Partition Exists' in sdflash_status.stdout_lines | first" and
+              "'IOx Partition Type: ext4' in sdflash_status.stdout_lines | first"
+            retries: 10
+            delay: 5
+          when: repartition_sdflash | default(false)
+
+        - name: Restart IOx service
+          cisco.ios.ios_config:
+            commands: iox
+
+        - name: Verify IOx service is running
+          cisco.ios.ios_command:
+            commands: show iox-service
+          register: iox_service
+          check_mode: no
+          until: not 'Not Running' in iox_service.stdout | first
+          retries: 10
+          delay: 5
+
+    - name: Configure ip routing
+      cisco.ios.ios_config:
+        save_when: changed
+        replace: block
+        lines:
+        - ip routing
+    
+    - name: Configure ERSPAN monitor session
+      block:
+        - name: Monitor session for IE-9320
+          cisco.ios.ios_config:
+            save_when: changed
+            replace: block
+            before:
+            - no monitor session {{ cv_monitor_session_id | default('1') }} type erspan-source
+            - "monitor session {{ cv_monitor_session_id | default('1') }} type erspan-source"
+            lines:
+            - no shutdown
+            - "source {{ cv_monitor_session_src }}"
+            - destination
+            - erspan-id 2
+            - mtu 9000
+            - ip address 169.254.1.2
+            - origin ip address 169.254.1.1
+          when: "'9320' in ansible_net_model"
+      rescue:
+        - name: Error while configuring monitor session
+          ansible.builtin.fail:
+            msg: "The monitor session {{ monitor_session_id | default('1') }} already exists"
+          ignore_errors: no
+
+    - name: Configure switchport for communication with Cyber Vision center
+      cisco.ios.ios_config:
+        before:
+          - '{{ cv_switchport }}'
+        lines:
+          - switchport access vlan {{ cv_collection_vlan }}
+          - no shutdown
+    
+    - name: Configure VLANs
+      block:
+      - name: Configure CV Collection and Capture VLANs
+        cisco.ios.ios_vlans:
+          config:
+            - name: CV-Collection-VLAN
+              vlan_id: "{{ cv_collection_vlan }}"
+              state: active
+              shutdown: disabled
+            - name: CV-Capture-VLAN
+              vlan_id: "{{ cv_capture_vlan }}"
+              state: active
+              shutdown: disabled
+              remote_span: false
+          state: merged
+
+      - name: Display Configured VLANs on the switch
+        cisco.ios.ios_command:
+          commands: show vlan brief
+        register: show_vlan
+
+      - name: Print out configured VLANs
+        ansible.builtin.debug: 
+          var: show_vlan.stdout_lines
+
+    - name: Configure Trunk mode
+      block:
+      - name: Configure Trunk Mode for the App Gig Interface (9320)
+        cisco.ios.ios_config:
+          save_when: changed
+          replace: block
+          lines:
+          - interface AppGigabitEthernet 1/0/1
+          - switchport mode trunk
+        register: trunk_config
+        when: "'9320' in ansible_net_model"
+
+      - name: Display Applied Trunk Configuration
+        ansible.builtin.debug:
+          var: trunk_config.updates
+        changed_when: trunk_config is changed
+        when: trunk_config is changed
+
+      - name: Configure sensor application
+        block:
+          - name: Clear previous sensor application payload
+            cisco.ios.ios_config:
+              save_when: changed
+              replace: block
+              lines:
+                - no app-hosting appid {{ app_name }}
+
+          - name: Configure the application payload for IE9300
+            cisco.ios.ios_config:
+              save_when: changed
+              replace: block
+              before:
+                - "app-hosting appid {{ app_name }}"
+              lines:
+                - app-vnic AppGigabitEthernet trunk
+                - "vlan {{ cv_collection_vlan }} guest-interface 0"
+                - "guest-ipaddress {{ collection_address }} netmask 255.255.255.0"
+                - vlan 2508 guest-interface 1
+                - guest-ipaddress 169.254.1.2 netmask 255.255.255.0
+                - "app-default-gateway {{ collection_gateway }} guest-interface 0"
+                - app-resource docker
+                - run-opts 1 --rm
+                - app-resource profile custom
+                - cpu 1000
+                - memory 862
+                - persist-disk 2048 # minimum 2048
+
+          - name: Configure sensor application with Active Discovery
+            cisco.ios.ios_config:
+              save_when: changed
+              replace: block
+              before:
+                - "app-hosting appid {{ app_name }}"
+                - app-vnic AppGigabitEthernet trunk
+              lines:
+                - guest-interface 2
+            when: active_discovery_enabled is defined and active_discovery_enabled
+        when: cv_deployment_method == 'cli'
+    when: mode == 'install'
+
+  roles:
+  - role: cybervision_sensor_api
+    when: cv_deployment_method == 'api'
+  
+  - role: cybervision_sensor_cli
+    when: cv_deployment_method == 'cli'

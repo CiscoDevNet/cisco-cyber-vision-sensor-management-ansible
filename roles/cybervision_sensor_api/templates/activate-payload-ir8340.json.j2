@@ -1,0 +1,61 @@
+{
+  "resources": {
+    "profile": "exclusive",
+    "network": [
+      {
+        "interface-name": "eth0",
+        "network-name": "VPG1",
+        "mode": "static",
+        "ipv4": {
+          "ip": "{{collection_address | default('169.254.0.2')}}",
+          "prefix": "{{collection_prefix | default('30')}}",
+          "gateway": "{{collection_gateway | default('169.254.0.1')}}",
+          "default": true
+        }
+      },
+      {
+        "interface-name": "eth3",
+        "port_map": {},
+        "network-name": "VPG0",
+        "mode": null,
+        "ipv6": {},
+        "ipv4": {
+          "default": false,
+          "ip": "{{capture_address | default('169.254.1.2')}}",
+          "prefix": "{{capture_prefix | default('30')}}",
+          "mode": "static",
+          "gateway": ""
+        }
+      },
+      {% if (active_discovery_interfaces is defined) and (active_discovery_interfaces|length > 0) %}
+      {
+        "interface-name":"eth2",
+        "network-type":"bridge",
+        "network-name":"mgmt-bridge300"
+      },
+      {% endif %}
+      {
+        "interface-name": "eth1",
+        "network-type": "vlan",
+        "network-info": {
+          "vlan-id": "{{extra_capture_vlan | default('2340')}}"
+        },
+        "mode": "static",
+        "ipv4": {
+          "ip": "{{extra_capture_address | default('169.254.2.2')}}",
+          "prefix": "{{extra_capture_prefix | default('30')}}",
+          "default": false,
+          "gateway": "{{collection_gateway | default('169.254.0.1')}}"
+        },
+        "mac_forwarding": "no",
+        "mirroring": "yes",
+        "intf-matched": true
+      }
+    ],
+    "auto_remove": false,
+    "disk": "{{disk_size | default('472')}}"
+  },
+  "startup": {
+    "runtime_options": "--rm --tmpfs /tmp:rw,size=512m{{ runtime_option_ztp }}"
+  }
+}

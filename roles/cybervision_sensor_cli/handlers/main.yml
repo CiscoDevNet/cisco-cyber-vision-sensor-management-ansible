@@ -1,0 +1,12 @@
+---
+- name: Remove provisioning temporary directory
+  connection: local
+  file:
+    path: "{{ sensor_provisioning_temp_dir.path }}"
+    state: absent
+
+- name: Remove app temporary directory
+  connection: local
+  file:
+    path: "{{ app_extract_temp_dir.path }}"
+    state: absent

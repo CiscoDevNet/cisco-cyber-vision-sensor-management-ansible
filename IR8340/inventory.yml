@@ -1,0 +1,23 @@
+---
+all:
+  children:
+    IR8340:
+      hosts:
+        172.16.10.61:
+          collection_address: 169.254.0.2
+          collection_prefix: 30
+          iox_port: 443
+          sensor_name: "IR8340-1"
+          capture_mode: all
+          config_ssd: false
+          capture_filter: not arp
+          active_discovery_enabled: false
+          active_discovery_interfaces:
+            - "0": {...}
+              ip: "10.1.10.61"
+              netmask: "24"
+              vlan: 10
+              iface: "eth2"
+      vars:
+        ansible_connection: ansible.netcommon.network_cli
+        ansible_network_os: cisco.ios.ios

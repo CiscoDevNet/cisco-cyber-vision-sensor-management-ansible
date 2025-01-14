@@ -1,0 +1,95 @@
+---
+- name: Generate provisioning tokens
+  connection: local
+  block:
+    - name: Generate provisioning tokens from the center
+      ansible.builtin.uri:
+        validate_certs: false
+        url: "{{ center_url | mandatory }}/api/3.0/deployments/jwt"
+        method: POST
+        headers:
+          x-token-id: "{{ center_token | mandatory }}"
+        body_format: json
+        return_content: true
+        body: "{{ lookup('template', 'generate_jwt.json.j2') }}"
+      register: provisioning_tokens_result
+  rescue:
+    - name: Create a deployment key
+      ansible.builtin.uri:
+        validate_certs: false
+        url: "{{ center_url | mandatory }}/api/3.0/deployments"
+        method: POST
+        headers:
+          x-token-id: "{{ center_token | mandatory }}"
+        body_format: json
+        return_content: true
+        body: "{{ lookup('template', 'create_deployment.json.j2') }}"
+      vars:
+        expiration_date: "{{ '%Y-%m-%d' | strftime(now().timestamp() | int + 31536000) }}"
+      register: deployment_result
+    - name: Generate provisioning tokens from the center
+      ansible.builtin.uri:
+        validate_certs: false
+        url: "{{ center_url | mandatory }}/api/3.0/deployments/jwt"
+        method: POST
+        headers:
+          x-token-id: "{{ center_token | mandatory }}"
+        body_format: json
+        return_content: true
+        body: "{{ lookup('template', 'generate_jwt.json.j2') }}"
+      register: provisioning_tokens_result
+
+- name: Register ZTP runtime option
+  ansible.builtin.set_fact:
+    runtime_option_ztp: " --env PROVISIONING_TOKEN={{ provisioning_tokens_result['json'][sensor_serial] }}"
+
+- name: Ensure a temporary directory for app download
+  connection: local
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: app_download
+  register: app_dowload_temp_dir
+  notify: "Remove app temporary directory"
+
+- name: Set application architecture (IC3000)
+  ansible.builtin.set_fact:
+    sensor_app_arch: "ic3000-x86-64"
+  when: "'IC3000' in group_names"
+  connection: local
+
+- name: Set application architecture (C9XXX, IR8340)
+  ansible.builtin.set_fact:
+    sensor_app_arch: "x86-64"
+  when: "'C9XXX' in group_names or 'IR8340' in group_names"
+  connection: local
+
+- name: Set application architecture (IE3X00, IE9300, IR1XXX)
+  ansible.builtin.set_fact:
+    sensor_app_arch: "aarch64"
+  when: "'IR1XXX' in group_names or 'IE3X00' in group_names or 'IE9300' in group_names"
+  connection: local
+
+- name: Set filename for sensor app
+  ansible.builtin.set_fact:
+    sensor_app_filename: "cviox-{{ sensor_app_arch }}.tar"
+  when: active_discovery_enabled is false or (active_discovery_interfaces | default([]) | length == 0)
+  connection: local
+
+- name: Set filename for sensor app (active discovery)
+  ansible.builtin.set_fact:
+    sensor_app_filename: "cviox-active-discovery-{{ sensor_app_arch }}.tar"
+  when: 
+    - active_discovery_enabled is true and (active_discovery_interfaces | default([]) | length > 0)
+  connection: local
+
+- name: Register application tar path
+  ansible.builtin.set_fact:
+    application_tar_path: "{{ app_dowload_temp_dir.path }}/{{ sensor_app_filename }}"
+
+- name: Download sensor app from center
+  connection: local
+  ansible.builtin.get_url:
+    url: "{{ center_url | mandatory }}/sensor-apps/{{ sensor_app_filename | mandatory }}"
+    dest: "{{ application_tar_path }}"
+    validate_certs: false
+    mode: '0644'

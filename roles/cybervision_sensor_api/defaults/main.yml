@@ -1,0 +1,6 @@
+check_sensor_and_center_version: true
+check_sensor_status: true
+ztp_deployment: false
+deployment_key_name: ansible
+active_discovery_enabled: false
+runtime_option_ztp: ''

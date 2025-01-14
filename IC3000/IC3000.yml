@@ -1,0 +1,20 @@
+---
+- name: Configure Cisco IC3000 switches to support CCV Sensor Deployment
+  hosts: IC3000
+  gather_facts: false
+  vars_files:
+    - vars.yml
+    - secrets.yml
+  vars:
+    minimum_cvc_version: "3.2.1"
+    center_url: "{{ cv_details.center_url }}"
+    application_tar_path: "{{ cv_details.application_tar_path }}"
+    cv_scp_username: "{{ cv_scp_username }}"
+    cv_scp_password: "{{ cv_scp_password }}"
+    ansible_controller_ip: "{{ cv_details.ansible_controller_ip }}"
+    cv_default_app_name: "{{ cv_details.default_app_name }}"
+  
+  pre_tasks:
+
+  roles:
+  - role: cybervision_sensor_api

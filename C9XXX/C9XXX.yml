@@ -1,0 +1,381 @@
+---
+- name: Configure Cisco Catalyst 9XXX switches to support CCV Sensor Deployment
+  hosts: C9XXX
+  gather_facts: false
+  vars_files:
+    - vars.yml
+    - secrets.yml
+  vars:
+    minimum_ios_version: "17.02.01"
+    minimum_cvc_version: "3.2.1"
+    center_url: "{{ cv_details.center_url }}"
+    application_tar_path: "{{ cv_details.application_tar_path }}"
+    cv_collection_vlan: "{{ cv_details.cv_collection_vlan }}"
+    cv_capture_vlan: "{{ cv_details.cv_capture_vlan }}"
+    cv_switchport: "{{ cv_details.cv_switchport }}"
+    cv_monitor_session_id: "{{ cv_details.monitor_session_id }}"
+    cv_monitor_session_src: "{{ cv_details.monitor_session_src }}"
+    cv_scp_username: "{{ cv_scp_username }}"
+    cv_scp_password: "{{ cv_scp_password }}"
+    ansible_controller_ip: "{{ cv_details.ansible_controller_ip }}"
+    cv_default_app_name: "{{ cv_details.default_app_name }}"
+    cv_deployment_method: "{{ cv_details.deployment_method }}"
+    ztp_deployment: "{{ cv_details.ztp_deployment }}"
+    exclusive_mode: "{{ cv_details.exclusive_mode }}"
+  
+  pre_tasks:
+  - name: Gather Cisco facts
+    cisco.ios.ios_facts:
+      gather_subset: hardware
+
+  - name: Assert that device version is greater than minimum version
+    ansible.builtin.assert:
+      that: "ansible_net_version > minimum_ios_version"
+      fail_msg: "Current version {{ ansible_net_version }} is lower than minimum requirement, Version {{ minimum_ios_version }}.  Please update device firmware to Version {{ minimum_ios_version }} or greater."
+      success_msg: "Current version {{ ansible_net_version }} meets minimum version requirements."
+  
+  - name: Detect if host needs new install or update
+    block:
+      - name: Show app-hosting list
+        cisco.ios.ios_command:
+          commands: 'show app-hosting list'
+        register: app_hosting_list
+
+      - name: Detect install or update
+        ansible.builtin.set_fact: mode="{{ 'install' if 'No App found' in app_hosting_list.stdout[0] else 'update' }}"
+        connection: local
+
+  - name: Set Cyber Vision Sensor app name
+    block:
+      - name: For updating the app
+        block:
+          - name: Get the app name for update
+            ansible.builtin.set_fact:
+              app_list: "{{ app_hosting_list.stdout_lines | regex_findall('(\\w+)\\s+(\\w+)',multiline=True) | default('No match found') }}"
+
+          - name: Set app name for update
+            ansible.builtin.set_fact: app_name="{{ app_list[1][0] }}"
+            connection: local
+        when: mode == 'update'
+
+      - name: Set app name for install
+        ansible.builtin.set_fact: app_name="{{ cv_default_app_name }}"
+        connection: local
+        when: mode == 'install'
+
+  - name: Configure for new sensor installation
+    block:
+      - name: Check SSD presence and formatting for IOx
+        block:
+          - name: Check if SSD is present
+            block:
+              - name: Get file system information
+                cisco.ios.ios_command:
+                  commands: show file system
+                register: file_system
+
+              - name: Fail if SSD is not present
+                ansible.builtin.fail:
+                  msg: SSD disk is NOT inserted, please insert an SSD and format to ext4.
+                when: "'usbflash1:' not in file_system.stdout | first"
+
+          - name: Verify SSD is formatted to ext4
+            block:
+              - name: Get usbflash1 filesys
+                cisco.ios.ios_command:
+                  commands: "show usbflash1: filesys"
+                register: usbflash1_filesys
+
+              - name: Verify SSD format is ext4
+                ansible.builtin.assert:
+                  that: "'Filesystem Type: ext4' in usbflash1_filesys.stdout_lines | first"
+                  fail_msg: SSD is not formatted to ext4, please reformat.
+                  success_msg: SSD formatting is OK.
+                when: usbflash1_filesys is defined
+            rescue:
+              - name: Error in SSD formatting validation
+                ansible.builtin.fail:
+                  msg: "An exception occured while verifying SSD formatting - SSD needs reformatting to ext4."
+                ignore_errors: yes
+
+              - name: Set_fact reformat_ssd
+                ansible.builtin.set_fact:
+                  reformat_ssd: true
+
+          - name: Verify whether the usbflash is full or not
+            block:
+              - name: Verify whether the usbflash is full or not
+                cisco.ios.ios_command:
+                  commands: 'dir usbflash1:'
+                register: usbflash_size
+
+              - name: Print the usbflash size
+                ansible.builtin.debug:
+                  var: usbflash_size.stdout_lines
+
+              - name: Extract Free bytes
+                ansible.builtin.set_fact:
+                  free_bytes: "{{ usbflash_size.stdout | regex_findall('(\\d+)\\s+bytes\\s+free') | default('Not found') }}"
+              
+              - name: Display free bytes
+                ansible.builtin.set_fact:
+                  usbflash_full: "{{ free_bytes[0] | int < 1024 }}"
+              
+              - name: Print usbflash status
+                ansible.builtin.debug:
+                  msg: "usbflash is {{ 'full with the usbflash size of ' ~ free_bytes[0] ~ ' bytes' if usbflash_full else 'normal with the usbflash size of ' ~ free_bytes[0] ~ ' bytes' }}"
+              
+              - name: Print free bytes
+                ansible.builtin.debug:
+                  msg: "Free bytes are {{ free_bytes[0] }}"
+
+          - name: Unprovision IOx 
+            cisco.ios.ios_config:
+              save_when: changed
+              replace: block
+              lines:
+                - no iox
+            register: iox_config
+            vars:
+              ansible_command_timeout: 600
+
+          - name: Pause to ensure IOx is disabled
+            ansible.builtin.pause:
+              seconds: 15
+
+          - name: Format SSD if necessary
+            block:
+              - name: Verify IOx is disabled before repartitioning
+                cisco.ios.ios_command:
+                  commands: show iox
+                register: iox_status
+                until: >
+                  iox_status.stdout_lines[0] | regex_search('IOx service \(CAF\).*Not Running') and
+                  iox_status.stdout_lines[0] | regex_search('IOx service \(HA\).*Not Running') and
+                  iox_status.stdout_lines[0] | regex_search('IOx service \(IOxman\).*Not Running') and
+                  iox_status.stdout_lines[0] | regex_search('IOx service \(Sec storage\).*Not Running') and
+                  iox_status.stdout_lines[0] | regex_search('Dockerd.*Not Running')
+                retries: 10
+                delay: 5
+
+              # - name: Format SSD for ext4
+              #   cisco.ios.ios_command: 
+              #     commands: 'format usbflash1: ext4'
+
+              - name: Assert formatting operation is complete
+                cisco.ios.ios_command:
+                  commands: "show usbflash1: filesys"
+                register: usbflash1_status
+                until: >
+                  "'Filesystem Type: ext4' in usbflash1_filesys.stdout_lines | first"
+                retries: 10
+                delay: 5
+            when: reformat_ssd | default(false)
+
+          - name: Restart IOx service
+            cisco.ios.ios_config:
+              commands: 
+              - iox
+
+          - name: Verify IOx service is running
+            cisco.ios.ios_command:
+              commands: show iox-service
+            register: iox_service
+            check_mode: no
+            until: 
+              - not 'Not Running' in iox_service.stdout | first
+              - not 'Not Ready' in iox_service.stdout | first
+            retries: 10
+            delay: 5
+
+      - name: Configure with ERSPAN
+        block:
+          - name: Configure ip routing
+            cisco.ios.ios_config:
+              save_when: changed
+              replace: block
+              lines:
+                - ip routing
+          
+          - name: Configure capture vlan
+            cisco.ios.ios_config:
+              save_when: changed
+              replace: block
+              before:
+                - vlan {{ cv_capture_vlan }}
+              lines:
+                - interface vlan {{ cv_capture_vlan }}
+                - "ip address 169.254.1.1 255.255.255.252"
+                - no shutdown
+          
+          - name: Configure ERSPAN Monitor Session
+            block:
+              - name: Verify existing monitor session
+                cisco.ios.ios_config:
+                  save_when: changed
+                  replace: block
+                  before:
+                    - no monitor session {{ cv_monitor_session_id | default('1') }} type erspan-source
+                    - "monitor session {{ cv_monitor_session_id | default('1') }} type erspan-source"
+                  lines:
+                    - no shutdown
+                    - "source {{ cv_monitor_session_src }}"
+                    - destination
+                    - erspan-id 2
+                    - mtu 9000
+                    - ip address 169.254.1.2
+                    - origin ip address 169.254.1.1
+            rescue:
+              - name: Error while configuring monitor session
+                ansible.builtin.fail:
+                  msg: "The monitor session {{ cv_monitor_session_id | default('1') }} already exists"
+                ignore_errors: no
+        when: span == 'erspan'
+
+      - name: Configure with RSPAN
+        block:
+          - name: Configure capture vlan
+            cisco.ios.ios_config:
+              save_when: changed
+              replace: block
+              before:
+                - vlan {{ cv_capture_vlan }}
+              lines:
+                - interface vlan {{ cv_capture_vlan }}
+                - remote-span
+
+          - name: Configure RSPAN Monitor Session
+            block:
+              - name: Verify existing monitor session
+                cisco.ios.ios_config:
+                  save_when: changed
+                  replace: block
+                  before:
+                    - no monitor session {{ cv_monitor_session_id | default('1') }} source {{ cv_monitor_session_src }}
+                    - "monitor session {{ cv_monitor_session_id | default('1') }} source {{ cv_monitor_session_src }}"
+                  lines:
+                    - monitor session {{ cv_monitor_session_id | default('1') }} destination remote vlan {{ cv_capture_vlan }}
+            rescue:
+              - name: Error while configuring monitor session
+                ansible.builtin.fail:
+                  msg: "The monitor session {{ cv_monitor_session_id | default('1') }} already exists"
+                ignore_errors: no
+        when: span == 'rspan'
+
+      - name: Configure switchport for communication with Cyber Vision center
+        cisco.ios.ios_config:
+          before:
+            - '{{ cv_switchport }}'
+          lines:
+            - switchport access vlan {{ cv_collection_vlan }}
+            - no shutdown
+
+      - name: Configure CV Collection and Capture VLANs
+        cisco.ios.ios_vlans:
+          config:
+            - name: CV-Collection-VLAN
+              vlan_id: "{{ cv_collection_vlan }}"
+              state: active
+              shutdown: disabled
+            - name: CV-Capture-VLAN
+              vlan_id: "{{ cv_capture_vlan }}"
+              state: active
+              shutdown: disabled
+              remote_span: false
+          state: merged
+
+      - name: Display Configured VLANs on the switch
+        cisco.ios.ios_command:
+          commands: show vlan brief
+        register: show_vlan
+
+      - name: Print out configured VLANs
+        ansible.builtin.debug: 
+          var: show_vlan.stdout_lines
+
+      - name: Configure the VLAN for traffic mirroring
+        cisco.ios.ios_config:
+          save_when: changed
+          replace: block
+          before:
+            - "vlan {{ cv_collection_vlan }}"
+          lines:
+            - "interface vlan {{ cv_collection_vlan }}"
+            - "ip address {{ collection_address }} 255.255.255.0"
+        register: traffic_mirroring
+      
+      - name: Display Applied VLAN Configuration
+        ansible.builtin.debug:
+          var: traffic_mirroring.updates
+        changed_when: traffic_mirroring is changed
+        when: traffic_mirroring is changed
+
+      - name: Configure Trunk Mode for the App Gig Interface
+        cisco.ios.ios_config:
+          save_when: changed
+          replace: block
+          lines:
+            - interface AppGigabitEthernet 1/0/1
+            - switchport mode trunk
+        register: trunk_config
+
+      - name: Display Applied Trunk Configuration
+        ansible.builtin.debug:
+          var: trunk_config.updates
+        changed_when: trunk_config is changed
+        when: trunk_config is changed
+      
+      - name: Display Applied IOS Configuration
+        ansible.builtin.debug:
+          var: iox_config.updates
+        changed_when: iox_config is changed
+        when: iox_config is changed
+
+      - name: Configure sensor application
+        block:
+          - name: Clear previous sensor application payload
+            cisco.ios.ios_config:
+              save_when: changed
+              replace: block
+              lines:
+                - no app-hosting appid {{ app_name }}
+
+          - name: Configure sensor application payload
+            cisco.ios.ios_config:
+              save_when: changed
+              replace: block
+              before:
+                - "app-hosting appid {{ app_name }}"
+              lines:
+                - app-vnic AppGigabitEthernet trunk
+                - "vlan {{ cv_collection_vlan }} guest-interface 0"
+                - "guest-ipaddress {{ collection_address }} netmask 255.255.255.0"
+                - vlan 2508 guest-interface 1
+                - mirroring
+                - guest-ipaddress 169.254.1.2 netmask 255.255.255.0
+                - "app-default-gateway {{ collection_gateway }} guest-interface 0"
+                - app-resource profile custom
+                - cpu 7400
+                - memory 2048
+                - persist-disk 8192
+                - vcpu 2
+
+          - name: Configure sensor application with Active Discovery
+            cisco.ios.ios_config:
+              save_when: changed
+              replace: block
+              before:
+                - "app-hosting appid {{ app_name }}"
+                - app-vnic AppGigabitEthernet trunk
+              lines:
+                - guest-interface 2
+            when: active_discovery_enabled is defined and active_discovery_enabled
+        when: cv_deployment_method == 'cli'
+    when: mode == 'install'
+
+  roles:
+  - role: cybervision_sensor_api
+    when: cv_deployment_method == 'api'
+  
+  - role: cybervision_sensor_cli
+    when: cv_deployment_method == 'cli'

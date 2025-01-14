@@ -1,0 +1,90 @@
+{
+  "resources": {
+    "profile": "exclusive",
+    "cpu": 10260,
+    "memory": 6400,
+    "network": [
+      {
+        "interface-name": "eth0",
+        "network-name": "iox-bridge0",
+        "network-type": "bridge",
+        "ipv4": {
+          "mode": "static",
+          "dns": "",
+          "ip": "{{collection_address}}",
+          "prefix": "{{collection_prefix}}",
+          "gateway": "{{mgmt_gateway}}",
+          "default": true
+        },
+        "ipv6": {
+          "disabled": true
+        },
+        "mirroring": "no",
+      },
+      {
+        "interface-name": "eth1",
+        "mirroring": "yes",
+        "network-name": "int1",
+        "port_map": {},
+        "ipv4": {
+          "disabled": true
+        },
+        "ipv6": {
+          "disabled": true
+        },
+      },
+      {
+        "interface-name": "eth2",
+        "mirroring": "yes",
+        "network-name": "int2",
+        "port_map": {},
+        "ipv4": {
+          "disabled": true
+        },
+        "ipv6": {
+          "disabled": true
+        },
+      },
+      {
+        "interface-name": "eth3",
+        "mirroring": "yes",
+        "network-name": "int3",
+        "port_map": {},
+        "ipv4": {
+          "disabled": true
+        },
+        "ipv6": {
+          "disabled": true
+        },
+      },
+      {
+        "interface-name": "eth4",
+        "mirroring": "yes",
+        "network-name": "int4",
+        "port_map": {},
+        "ipv4": {
+          "disabled": true
+        },
+        "ipv6": {
+          "disabled": true
+        },
+      }
+    ],
+    "vcpu": 4,
+    "disk": 50000,
+    "devices": [
+      {
+        "device-id": "usb1/1-1/1-1.2",
+        "device-name": "usb1",
+        "label": "USB1",
+        "port-num": "1",
+        "type": "usbport",
+        "matched": true
+      }
+    ],
+    "auto_remove": false
+  },
+  "startup": {
+    "runtime_options": "--rm{{ runtime_option_ztp }}"
+  }
+}

@@ -1,0 +1,4 @@
+ansible_command_timeout: 35
+non_exclusive_reserved_memory: 32
+non_exclusive_reserved_cpu: 128
+deployment_profile: exclusive

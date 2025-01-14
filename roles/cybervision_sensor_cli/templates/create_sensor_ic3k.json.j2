@@ -1,0 +1,29 @@
+{
+    "mgmt_ip":"{{inventory_hostname}}",
+    "mgmt_netmask":"{{mgmt_netmask}}",
+    "mgmt_gateway":"{{mgmt_gateway}}",
+    "localmanager_username":"{{iox_login}}",
+    "serial":"{{serial}}",
+    "name":"{{name}}",
+    "ip":"{{collection_address}}",
+    "model":"ic3000",
+    "netmask":"{{collection_prefix}}",
+    "gw":"{{collection_gateway | default('')}}",
+    "centerip":"",
+    "mode":"{{capture_mode | default('optimal')}}",
+{% if capture_mode is defined and capture_filter is defined and capture_mode == 'custom' and capture_filter|length  %}
+    "custom": "{{capture_filter}}",
+{% endif %}
+{% if active_discovery_interfaces is defined and active_discovery_interfaces|length %}
+    "active_discovery_interfaces": [
+    {% for interface in active_discovery_interfaces %}
+        {
+            "ip": "{{interface.ip}}",
+            "netmask": "{{interface.netmask}}",
+            "vlan": {{interface.vlan | default(0) }},
+            "iface": "{{interface.iface}}"
+        }
+    {% endfor %}
+    ]
+{% endif %}
+}

@@ -1,0 +1,218 @@
+---
+- name: Configure Cisco IR1XXX to support CCV Sensor Deployment
+  hosts: IR1XXX
+  gather_facts: false
+  vars_files:
+    - vars.yml
+    - secrets.yml
+  vars:
+    minimum_ios_version: "17.02.01"
+    minimum_cvc_version: "3.2.1"
+    center_url: "{{ cv_details.center_url }}"
+    application_tar_path: "{{ cv_details.application_tar_path }}"
+    cv_monitor_session_src: "{{ cv_details.monitor_session_src }}"
+    cv_monitor_session_id: "{{ cv_details.monitor_session_id }}"
+    cv_nat_outside_interface: "{{ cv_details.nat_outside_interface }}"
+    cv_scp_username: "{{ cv_scp_username }}"
+    cv_scp_password: "{{ cv_scp_password }}"
+    ansible_controller_ip: "{{ cv_details.ansible_controller_ip }}"
+    cv_default_app_name: "{{ cv_details.default_app_name }}"
+    cv_deployment_method : "{{ cv_details.deployment_method }}"
+    ztp_deployment: "{{ cv_details.ztp_deployment }}"
+    exclusive_mode: "{{ cv_details.exclusive_mode }}"
+  
+  pre_tasks:
+  - name: Gather Cisco facts
+    cisco.ios.ios_facts:
+      gather_subset: hardware
+
+  - name: Assert that device version is greater than minimum version
+    ansible.builtin.assert:
+      that: "ansible_net_version > minimum_ios_version"
+      fail_msg: "Current version {{ ansible_net_version }} is lower than minimum requirement, Version {{ minimum_ios_version }}.  Please update device firmware to Version {{ minimum_ios_version }} or greater."
+      success_msg: "Current version {{ ansible_net_version }} meets minimum version requirements."
+
+  - name: Detect if host needs new install or update
+    block:
+      - name: Show app-hosting list
+        cisco.ios.ios_command:
+          commands: 'show app-hosting list'
+        register: app_hosting_list
+
+      - name: Detect install or update
+        ansible.builtin.set_fact: mode="{{ 'install' if 'No App found' in app_hosting_list.stdout[0] else 'update' }}"
+        connection: local
+
+  - name: Set Cyber Vision Sensor app name
+    block:
+      - name: For updating the app
+        block:
+          - name: Get the app name for update
+            ansible.builtin.set_fact:
+              app_list: "{{ app_hosting_list.stdout_lines | regex_findall('(\\w+)\\s+(\\w+)',multiline=True) | default('No match found') }}"
+
+          - name: Set app name for update
+            ansible.builtin.set_fact: app_name="{{ app_list[1][0] }}"
+            connection: local
+        when: mode == 'update'
+
+      - name: Set app name for install
+        ansible.builtin.set_fact: app_name="{{ cv_default_app_name }}"
+        connection: local
+        when: mode == 'install'
+
+  - name: Configuration for new sensor installation
+    block:
+      - name: Provision IOx service
+        cisco.ios.ios_config:
+          commands: 
+          - iox
+
+      - name: Verify IOx service is running
+        cisco.ios.ios_command:
+          commands: show iox-service
+        register: iox_service
+        check_mode: no
+        until: 
+          - not 'Not Running' in iox_service.stdout | first
+          - not 'Not Ready' in iox_service.stdout | first
+        retries: 10
+        delay: 5
+
+      - name: Setup ERSPAN
+        block:
+          - name: Enable IP Routing
+            cisco.ios.ios_config:
+              save_when: changed
+              lines:
+              - ip routing
+            register: ip_routing_config
+
+          - name: Configure Virtual Port Group 0
+            cisco.ios.ios_config:
+              save_when: changed
+              lines:
+              - interface VirtualPortGroup 0
+              - ip address 169.254.1.1 255.255.255.252
+            register: virtual_port_group_config
+          
+          - name: Configure ERSPAN Monitor Session
+            cisco.ios.ios_config:
+              save_when: changed
+              replace: block
+              before:
+              - no monitor session {{ cv_monitor_session_id }}
+              - monitor session {{ cv_monitor_session_id | default('1') }} type erspan-source
+              lines:
+              - source {{ cv_monitor_session_src }}
+              - no shutdown
+              - destination
+              - erspan-id 1
+              - mtu 1464
+              - ip address 169.254.1.2
+              - origin ip address 169.254.1.1
+            register: monitor_session_config
+
+          - name: Display Applied ERSPAN Monitor Session Configuration
+            ansible.builtin.debug:
+              var: monitor_session_config.updates
+            changed_when: monitor_session_config is changed
+            when: monitor_session_config is changed
+
+      - name: Configure NAT
+        block:
+        - name: Configure NAT outside interface
+          cisco.ios.ios_config:
+            save_when: always
+            lines:
+            - "{{ cv_nat_outside_interface }}"
+            - ip nat outside
+          register: nat_outside_config
+
+        - name: Configure Virtual Port Group 1 and NAT inside interface
+          cisco.ios.ios_config:
+            save_when: always
+            before:
+            - interface VirtualPortGroup1
+            lines:
+            - ip address 169.254.0.1 255.255.255.252
+            - ip nat inside
+          register: nat_inside_config
+
+        - name: Configure NAT ACL
+          cisco.ios.ios_config:
+            save_when: always
+            before:
+            - "ip nat inside source list NAT_ACL {{ cv_nat_outside_interface }} overload"
+            - ip access-list standard NAT_ACL
+            lines:
+            - 10 permit 169.254.0.0 0.0.0.3
+          register: nat_inside_config
+
+      - name: Configure sensor application
+        block:
+          - name: Clear previous sensor application payload
+            cisco.ios.ios_config:
+              save_when: changed
+              replace: block
+              lines:
+                - no app-hosting appid {{ app_name }}
+
+          - name: Detect SSD
+            ansible.builtin.import_tasks: ../roles/cybervision_sensor_cli/tasks/detect_ssd.yml
+
+          - name: Configure sensor application payload
+            cisco.ios.ios_config:
+              save_when: changed
+              replace: block
+              before:
+                - "app-hosting appid {{ app_name }}"
+              lines:
+                - app-vnic gateway0 virtualportgroup 1 guest-interface 0
+                - guest-ipaddress 169.254.0.2 netmask 255.255.255.252
+                - app-vnic gateway1 virtualportgroup 0 guest-interface 1
+                - guest-ipaddress 169.254.1.2 netmask 255.255.255.252
+                - app-default-gateway 169.254.0.1 guest-interface 0
+
+          - name: Configure sensor application for SSD
+            cisco.ios.ios_config:
+              save_when: changed
+              replace: block
+              before:
+                - "app-hosting appid {{ app_name }}"
+                - app-resource profile custom
+              lines:
+                - cpu 1155
+                - memory 862
+                - persist-disk 51200
+            when: "config_ssd and has_ssd"
+
+          - name: Configure sensor application without SSD
+            cisco.ios.ios_config:
+              save_when: changed
+              replace: block
+              before:
+                - "app-hosting appid {{ app_name }}"
+                - app-resource docker
+              lines:
+                - run-opts 1 "--tmpfs /tmp:rw,size=128m"
+            when: "not config_ssd"
+
+          - name: Configure sensor application with Active Discovery
+            cisco.ios.ios_config:
+              save_when: changed
+              replace: block
+              before:
+                - "app-hosting appid {{ app_name }}"
+              lines:
+                - app-vnic gateway2 virtualportgroup 2 guest-interface 2
+            when: active_discovery_enabled is defined and active_discovery_enabled
+        when: cv_deployment_method == 'cli'
+    when: mode == 'install'
+
+  roles:
+  - role: cybervision_sensor_api
+    when: cv_deployment_method == 'api'
+  
+  - role: cybervision_sensor_cli
+    when: cv_deployment_method == 'cli'

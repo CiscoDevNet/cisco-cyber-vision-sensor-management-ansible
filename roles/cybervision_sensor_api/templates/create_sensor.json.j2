@@ -1,0 +1,30 @@
+{
+    "mgmt_ip":"",
+    "mgmt_netmask":"",
+    "mgmt_gateway":"",
+    "localmanager_username":"",
+    "serial":"{{sensor_serial}}",
+    "name":"{{sensor_name}}",
+    "ip":"",
+    "model":"iox",
+    "netmask":"",
+    "gw":"",
+    "centerip":"",
+    "mode":"{{capture_mode | default('optimal')}}",
+    "rspan_capture": {{rspan|default(false)}},
+{% if capture_mode is defined and capture_filter is defined and capture_mode == 'custom' and capture_filter|length  %}
+    "custom": "{{capture_filter}}",
+{% endif %}
+{% if active_discovery_interfaces is defined and active_discovery_interfaces|length %}
+    "active_discovery_interfaces": [
+    {% for interface in active_discovery_interfaces %}
+        {
+            "ip": "{{interface.ip}}",
+            "netmask": "{{interface.netmask}}",
+            "vlan": {{interface.vlan}},
+            "iface": "{{interface.iface}}"
+        }{% if not loop.last %},{% endif %}
+    {% endfor %}
+    ]
+{% endif %}
+}

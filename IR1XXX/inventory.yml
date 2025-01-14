@@ -1,0 +1,38 @@
+---
+all:
+  children:
+    IR1XXX:
+      hosts:
+        172.16.10.51:
+          collection_address: 169.254.0.2
+          collection_prefix: 30
+          iox_port: 443
+          sensor_name: "IR1101-1"
+          capture_mode: all
+          config_ssd: false
+          capture_filter: not arp
+          active_discovery_enabled: false
+          active_discovery_interfaces:
+            - "0": {...}
+              ip: "10.0.10.51"
+              netmask: "24"
+              vlan: 10
+              iface: "eth2"
+        172.16.10.52:
+          collection_address: 169.254.0.2
+          collection_prefix: 30
+          iox_port: 443
+          sensor_name: "IR1833-1"
+          capture_mode: all
+          config_ssd: false
+          capture_filter: not arp
+          active_discovery_enabled: false
+          active_discovery_interfaces:
+            - "0": {...}
+              ip: "10.0.10.183"
+              netmask: "24"
+              vlan: 10
+              iface: "eth2"
+      vars:
+        ansible_connection: ansible.netcommon.network_cli
+        ansible_network_os: cisco.ios.ios

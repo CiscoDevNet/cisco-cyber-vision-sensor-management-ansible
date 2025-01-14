@@ -1,0 +1,152 @@
+---
+- name: Ensure a temporary directory for sensor provisioning download.
+  connection: local
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: sensor_provisioning
+  register: sensor_provisioning_temp_dir
+  notify: "Remove provisioning temporary directory"
+
+- name: Set sensor name used in Center
+  ansible.builtin.set_fact: 
+    sensor_name: "{{ sensor_name | default('', true) }}"
+  connection: local
+
+- name: Sensor (Non IC3000)
+  connection: local
+  block:
+    - name: Get sensor id (non IC3000)
+      block:
+        - name: Create sensor (non IC3000)
+          ansible.builtin.uri:
+            validate_certs: false
+            url: "{{ center_url | mandatory }}/api/3.0/sensors"
+            method: POST
+            headers:
+              x-token-id: "{{ center_token | mandatory }}"
+            body_format: json
+            return_content: true
+            body: "{{ lookup('template', 'create_sensor.json.j2') }}"
+          register: sensor_creation_result
+
+        - name: register sensor id
+          ansible.builtin.set_fact: sensor_id="{{ sensor_creation_result['json']['Id'] }}"
+
+    - name: Get sensor provisioning
+      ansible.builtin.uri:
+        validate_certs: false
+        url: "{{ center_url | mandatory }}/api/3.0/sensors/package"
+        method: POST
+        headers:
+          x-token-id: "{{ center_token | mandatory }}"
+        body_format: json
+        body: "{{ {'id': sensor_id} | to_json }}"
+        dest: '{{ sensor_provisioning_temp_dir.path }}/sbs-sensor-config-{{ sensor_serial }}.zip'
+
+    - name: Upload provisioning package
+      ansible.builtin.uri:
+        validate_certs: false
+        url: https://{{ iox_base_url }}/iox/api/v2/hosting/apps/{{ app_name }}/appdata/sbs-sensor-config-{{ sensor_serial }}.zip
+        method: POST
+        headers:
+          X-Token-Id: "{{ auth_token }}"
+        status_code: 201
+        src: '{{ sensor_provisioning_temp_dir.path }}/sbs-sensor-config-{{ sensor_serial }}.zip'
+  when: "'IC3000' not in group_names"
+
+- name: Sensor (IC3000)
+  connection: local
+  block:
+    - name: Set model for sensor creation (IC3000)
+      set_fact: 
+        model: "{{ 'ic3000' if package.info.version <= '4.2.6' else 'iox' }}"
+
+    - name: Get sensor id (IC3000)
+      block:
+        - name: Create sensor
+          ansible.builtin.uri:
+            validate_certs: false
+            url: "{{ center_url | mandatory }}/api/3.0/sensors"
+            method: POST
+            headers:
+              x-token-id: "{{ center_token | mandatory }}"
+            body_format: json
+            return_content: true
+            body: "{{ lookup('template', 'create_sensor_ic3000.json.j2') }}"
+          register: sensor_creation_result
+
+        - name: register sensor id
+          ansible.builtin.set_fact: sensor_id="{{ sensor_creation_result['json']['Id'] }}"
+      when: sensor_id | length == 0
+
+    - name: Get sensor provisioning
+      ansible.builtin.uri:
+        validate_certs: false
+        url: "{{ center_url | mandatory }}/api/3.0/sensors/package"
+        method: POST
+        headers:
+          x-token-id: "{{ center_token | mandatory }}"
+        body_format: json
+        return_content: true
+        body: "{{ {'id': sensor_id, 'localmanager_password': iox_password} | to_json }}"
+        dest: "{{ sensor_provisioning_temp_dir.path }}/{{ sensor_serial }}.zip"
+
+    - name: Extract provisioning package
+      ansible.builtin.unarchive:
+        src: "{{ sensor_provisioning_temp_dir.path }}/{{ sensor_serial }}.zip"
+        dest: "{{ sensor_provisioning_temp_dir.path }}"
+
+    - name: Upload provisioning package (pre 4.2.6)
+      ansible.builtin.uri:
+        validate_certs: false
+        url: https://{{ iox_base_url }}/iox/api/v2/hosting/apps/{{ app_name }}/appdata/cybervision-sensor-config.zip
+        method: POST
+        headers:
+          X-Token-Id: "{{ auth_token }}"
+        status_code: 201
+        src: "{{ sensor_provisioning_temp_dir.path }}/{{ sensor_serial }}/appconfigs/cybervision-sensor-config.zip"
+      when: "package.info.version <= '4.2.6'"
+
+    - name: Upload provisioning package (post 4.3.0)
+      ansible.builtin.uri:
+        validate_certs: false
+        url: https://{{ iox_base_url }}/iox/api/v2/hosting/apps/{{ app_name }}/appdata/sbs-sensor-config-{{ sensor_serial }}.zip
+        method: POST
+        headers:
+          X-Token-Id: "{{ auth_token }}"
+        status_code: 201
+        src: "{{ sensor_provisioning_temp_dir.path }}/{{ sensor_serial }}.zip"
+      when: "package.info.version >= '4.3.0'"
+
+    - name: Stop app
+      ansible.builtin.uri:
+        validate_certs: false
+        url: https://{{ iox_base_url }}/iox/api/v2/hosting/apps/{{ app_name }}/state?action=stop
+        method: POST
+        headers:
+          X-Token-Id: "{{ auth_token }}"
+   
+    - name: pause to wait for app to stop
+      pause:
+        minutes: 1
+   
+    - name: Activate app
+      ansible.builtin.uri:
+        validate_certs: false
+        url: https://{{ iox_base_url }}/iox/api/v2/hosting/apps/{{ app_name }}/state?action=activate
+        method: POST
+        headers:
+          X-Token-Id: "{{ auth_token }}"
+ 
+    - name: pause to wait for app to activate
+      pause:
+        minutes: 1
+
+    - name: Start app
+      ansible.builtin.uri:
+        validate_certs: false
+        url: https://{{ iox_base_url }}/iox/api/v2/hosting/apps/{{ app_name }}/state?action=start
+        method: POST
+        headers:
+          X-Token-Id: "{{ auth_token }}"
+  when: "'IC3000' in group_names"

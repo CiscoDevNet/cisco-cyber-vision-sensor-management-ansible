@@ -1,0 +1,28 @@
+---
+- name: Detect presence of SSD (IRs)
+  cisco.ios.ios_command:
+    commands: show platform hardware msata status
+  register: storage_data
+
+- name: Print SSD status (IRs)
+  ansible.builtin.debug:
+    msg: "{{ storage_data.stdout }}"
+
+- name: set_fact SSD is present (IRs)
+  ansible.builtin.set_fact:
+    has_ssd: true
+  when:
+    - "storage_data.stdout[0] == 'SSD is present'"
+
+- name: set_fact SSD is not present (IRs)
+  ansible.builtin.set_fact:
+    has_ssd: false
+  when:
+    - "storage_data.stdout[0] == 'SSD is not present'"
+
+- name: Fail and error code if SSD is not present but configuration was requested (IRs)
+  ansible.builtin.fail:
+    msg: "SSD configuration requested, but no SSD detected."
+  when:
+    - config_ssd
+    - "not ('SSD is present' in storage_data.stdout | first)"
