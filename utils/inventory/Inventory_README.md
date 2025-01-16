@@ -23,4 +23,4 @@ create inventory with csv file
 2. ansible_inventory.yml will be created
 
 	ls -la ansible_inventory.yml
-	-rw-r--r--  1 <user>  staff  2128 Jan 26 09:52 ansible_inventory.yml
+	-rw-r--r-- 1 user staff  2128 Jan 26 09:52 ansible_inventory.yml
