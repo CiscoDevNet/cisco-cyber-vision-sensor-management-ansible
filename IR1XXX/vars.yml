@@ -1,7 +1,7 @@
 cv_details:
   # user specific values- change these to match your environment
   center_url: https://<CYBER_VISION_CENTER_URL> # Example: https://172.16.10.1
-  application_tar_path: ../cv_tar_files/<CV_SENSOR_TAR_FILE>.tar # Example: ../cv_tar_files/CiscoCyberVision-IOx-aarch64-5.0.1.tar
+  application_tar_path: /home/user/cisco-cyber-vision-sensor-management-ansible/cv_tar_files/<CV_SENSOR_TAR_FILE>.tar # Use the full path. Example: /home/user/cisco-cyber-vision-sensor-management-ansible/cv_tar_files/CiscoCyberVision-IOx-x86-64-5.0.1.tar
   monitor_session_src: interface <MONITOR_SESSION_VLAN> # Example: interface vlan 507 --OR-- GigabitEthernet 0/0/0
   ansible_controller_ip: <CONTROLLER_IP> # Example: 172.16.10.10
   nat_outside_interface: interface <OUTSIDE_INTERFACE> # Example: interface GigabitEthernet 0/0/0
