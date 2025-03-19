@@ -3,8 +3,8 @@
   hosts: IE3X00
   gather_facts: false
   vars_files:
-    - vars_test.yml
-    - secrets_test.yml
+    - vars.yml
+    - secrets.yml
   vars:
     minimum_ios_version: "17.02.01"
     minimum_cvc_version: "3.2.1"
