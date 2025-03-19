@@ -144,7 +144,7 @@
     - name: Copy the application tar file to the device
       cisco.ios.ios_command:
         commands:
-          - command: "copy scp://{{ cv_scp_username }}:{{ cv_scp_password }}@{{ ansible_controller_ip }}/{{ application_tar_path }} {{ storage }}"
+          - command: "copy scp://{{ cv_scp_username }}:{{ cv_scp_password }}@{{ ansible_controller_ip }}:{{ application_tar_path }} {{ storage }}"
             prompt: 'Destination filename \[{{ application_file[0] }}\]?'
             answer: "\r"
       vars:
